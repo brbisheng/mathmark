@@ -1,0 +1,315 @@
+"""水印提取与验证 - 多层取证
+
+从给定图像中提取所有层的水印信息,
+与配置的签名/密钥比对, 计算综合归属得分。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional, Union
+
+import numpy as np
+from PIL import Image
+
+from ..core.types import (
+    Evidence,
+    LayerType,
+    SignerInfo,
+    Verdict,
+    VerificationResult,
+    WatermarkConfig,
+)
+from ..crypto.hashing import sha256_bytes
+from ..crypto.keys import verify_signature
+from ..layers import (
+    l1_fingerprint,
+    l2_visible,
+    l3a_trustmark,
+    l3b_dwt_dct_svd,
+    l3c_cox_spread,
+    l5_metadata,
+    l6_c2pa,
+)
+from ..semantic.recognizer import recognize_from_image
+from ..utils.image_io import load_image
+
+PathLike = Union[str, Path]
+
+
+def _verdict_from_confidence(c: float, threshold_strong: float = 0.75, threshold_probable: float = 0.55, threshold_weak: float = 0.35) -> Verdict:
+    if c >= threshold_strong:
+        return Verdict.STRONG_MATCH
+    elif c >= threshold_probable:
+        return Verdict.PROBABLE_MATCH
+    elif c >= threshold_weak:
+        return Verdict.WEAK_INDICATION
+    return Verdict.NO_MATCH
+
+
+def extract_all(
+    image_path: PathLike,
+    config: WatermarkConfig,
+) -> dict[LayerType, Optional[bytes]]:
+    """提取所有层的水印 bits"""
+    try:
+        pil_img = load_image(image_path, mode="RGB")
+        image = np.array(pil_img, dtype=np.uint8)
+    except Exception:
+        return {}
+
+    # 派生 secret (与 embed 时相同)
+    secret_str = f"{config.teacher_id}:{config.teacher_name}"
+    secret = sha256_bytes(secret_str.encode("utf-8"))
+
+    results: dict[LayerType, Optional[bytes]] = {}
+
+    # L3a
+    if config.is_enabled(LayerType.INVISIBLE_TRUSTMARK):
+        try:
+            bits = l3a_trustmark.extract(image, config.trustmark, n_bits=100)
+            results[LayerType.INVISIBLE_TRUSTMARK] = bits
+        except Exception:
+            results[LayerType.INVISIBLE_TRUSTMARK] = None
+
+    # L3b
+    if config.is_enabled(LayerType.INVISIBLE_DWT):
+        try:
+            wm_bits = np.frombuffer(
+                (config.teacher_id.encode("utf-8") * 4)[:32], dtype=np.uint8
+            )[:32] % 2
+            if len(wm_bits) < 32:
+                wm_bits = np.concatenate([wm_bits, np.zeros(32 - len(wm_bits), dtype=np.uint8)])
+            bits = l3b_dwt_dct_svd.extract(image, config.dwt, wm_length=32)
+            results[LayerType.INVISIBLE_DWT] = bits.tobytes() if len(bits) > 0 else None
+        except Exception:
+            results[LayerType.INVISIBLE_DWT] = None
+
+    # L3c
+    if config.is_enabled(LayerType.INVISIBLE_COX):
+        try:
+            bits = l3c_cox_spread.extract(image, config.cox, secret, n_bits=64)
+            results[LayerType.INVISIBLE_COX] = bits.tobytes() if len(bits) > 0 else None
+        except Exception:
+            results[LayerType.INVISIBLE_COX] = None
+
+    return results
+
+
+def verify_image(
+    image_path: PathLike,
+    config: WatermarkConfig,
+    public_key=None,
+    threshold: float = 0.5,
+) -> VerificationResult:
+    """验证图像归属
+
+    Args:
+        image_path: 待验证图像
+        config: 验证配置
+        public_key: 教师公钥(用于 C2PA 验签)
+        threshold: 语义层相似度阈值
+    """
+    image_path = Path(image_path)
+    try:
+        pil_img = load_image(image_path, mode="RGB")
+        image = np.array(pil_img, dtype=np.uint8)
+    except Exception as e:
+        return VerificationResult(
+            image_path=image_path,
+            verdict=Verdict.NO_MATCH,
+            confidence=0.0,
+            layer_evidence={},
+        )
+
+    layer_evidence: dict[LayerType, Evidence] = {}
+    semantic_sim = 0.0
+    signer_info: Optional[SignerInfo] = None
+    c2pa_manifest_path: Optional[Path] = None
+    phash_match: Optional[dict] = None
+
+    # ================ L1: 指纹 ================
+    if config.is_enabled(LayerType.FINGERPRINT):
+        try:
+            fp = l1_fingerprint.compute_fingerprint(pil_img)
+            evidence = Evidence(
+                layer=LayerType.FINGERPRINT,
+                confidence=0.0,
+                details={"phash": fp.phash, "dhash": fp.dhash, "whash": fp.whash or ""},
+            )
+            layer_evidence[LayerType.FINGERPRINT] = evidence
+        except Exception:
+            layer_evidence[LayerType.FINGERPRINT] = Evidence(
+                layer=LayerType.FINGERPRINT, confidence=0.0, matched=False,
+            )
+
+    # ================ L4: 语义 ================
+    if config.is_enabled(LayerType.SEMANTIC) and config.semantic.signature:
+        try:
+            recognition = recognize_from_image(image, config.semantic.signature)
+            semantic_sim = recognition.overall_similarity
+            layer_evidence[LayerType.SEMANTIC] = Evidence(
+                layer=LayerType.SEMANTIC,
+                confidence=recognition.overall_similarity,
+                matched=recognition.overall_similarity >= threshold,
+                details={
+                    "verdict": recognition.verdict,
+                    "evidence": recognition.evidence,
+                    "ocr_engine": recognition.ocr_engine,
+                },
+            )
+        except Exception as e:
+            layer_evidence[LayerType.SEMANTIC] = Evidence(
+                layer=LayerType.SEMANTIC, confidence=0.0, matched=False,
+                details={"error": str(e)},
+            )
+
+    # ================ L3: 不可见水印 (通过提取的 bits) ================
+    bits_dict = extract_all(image_path, config)
+    # 期望的 teacher_id bits
+    expected_bits = np.frombuffer(
+        (config.teacher_id.encode("utf-8") * 4)[:32], dtype=np.uint8
+    )[:32] % 2
+    if len(expected_bits) < 32:
+        expected_bits = np.concatenate([expected_bits, np.zeros(32 - len(expected_bits), dtype=np.uint8)])
+
+    for layer in [LayerType.INVISIBLE_TRUSTMARK, LayerType.INVISIBLE_DWT, LayerType.INVISIBLE_COX]:
+        if not config.is_enabled(layer):
+            continue
+        bits_bytes = bits_dict.get(layer)
+        if bits_bytes is None:
+            layer_evidence[layer] = Evidence(layer=layer, confidence=0.0, matched=False)
+            continue
+        # 计算与期望 teacher_id bits 的一致度
+        extracted_arr = np.frombuffer(bits_bytes, dtype=np.uint8)[:32]
+        if len(extracted_arr) < 32:
+            extracted_arr = np.concatenate([extracted_arr, np.zeros(32 - len(extracted_arr), dtype=np.uint8)])
+        ber = float(np.mean(extracted_arr != expected_bits))
+        confidence = 1.0 - ber
+        layer_evidence[layer] = Evidence(
+            layer=layer,
+            confidence=confidence,
+            matched=confidence > 0.7,
+            details={"ber": ber, "n_bits": len(extracted_arr)},
+        )
+
+    # ================ L5: 元数据 ================
+    if config.is_enabled(LayerType.METADATA):
+        meta = l5_metadata.extract(pil_img)
+        # 检查 mathmark 字段
+        if "mathmark" in meta and meta["mathmark"].get("mathmark_teacher_id") == config.teacher_id:
+            layer_evidence[LayerType.METADATA] = Evidence(
+                layer=LayerType.METADATA,
+                confidence=0.95,
+                matched=True,
+                details={"mathmark": meta["mathmark"]},
+            )
+        elif "mathmark" in meta:
+            layer_evidence[LayerType.METADATA] = Evidence(
+                layer=LayerType.METADATA,
+                confidence=0.5,
+                matched=False,
+                details={"mathmark": meta["mathmark"]},
+            )
+        else:
+            layer_evidence[LayerType.METADATA] = Evidence(
+                layer=LayerType.METADATA,
+                confidence=0.0,
+                matched=False,
+            )
+
+    # ================ L6: C2PA ================
+    if config.is_enabled(LayerType.C2PA):
+        # 查找伴随的 manifest 文件
+        possible_paths = [
+            image_path.with_suffix(image_path.suffix + ".manifest.json"),
+            image_path.parent / (image_path.stem + ".manifest.json"),
+        ]
+        for p in possible_paths:
+            if p.exists():
+                c2pa_manifest_path = p
+                try:
+                    valid, msg = l6_c2pa.verify_manifest(p, image, public_key=public_key)
+                    if valid:
+                        manifest_data = json.loads(p.read_text(encoding="utf-8"))
+                        layer_evidence[LayerType.C2PA] = Evidence(
+                            layer=LayerType.C2PA,
+                            confidence=1.0,
+                            matched=True,
+                            details={"manifest": manifest_data, "verify_msg": msg},
+                        )
+                        signer_info = SignerInfo(
+                            teacher_id=manifest_data.get("teacher_id", ""),
+                            teacher_name=manifest_data.get("teacher_name", ""),
+                            public_key_fingerprint=manifest_data.get("public_key_fingerprint", ""),
+                            signing_time=__parse_datetime(manifest_data.get("timestamp")),
+                        )
+                    else:
+                        layer_evidence[LayerType.C2PA] = Evidence(
+                            layer=LayerType.C2PA,
+                            confidence=0.3,
+                            matched=False,
+                            details={"verify_msg": msg},
+                        )
+                except Exception as e:
+                    layer_evidence[LayerType.C2PA] = Evidence(
+                        layer=LayerType.C2PA,
+                        confidence=0.0,
+                        matched=False,
+                        details={"error": str(e)},
+                    )
+                break
+        else:
+            layer_evidence[LayerType.C2PA] = Evidence(
+                layer=LayerType.C2PA, confidence=0.0, matched=False,
+                details={"reason": "no_manifest_file"},
+            )
+
+    # ================ 综合判定 ================
+    # 加权: L6(0.30) + L3(0.20) + L4(0.30) + L5(0.10) + L1(0.10)
+    weights = {
+        LayerType.C2PA: 0.30,
+        LayerType.SEMANTIC: 0.30,
+        LayerType.INVISIBLE_TRUSTMARK: 0.07,
+        LayerType.INVISIBLE_DWT: 0.07,
+        LayerType.INVISIBLE_COX: 0.06,
+        LayerType.METADATA: 0.10,
+        LayerType.FINGERPRINT: 0.05,
+        LayerType.VISIBLE: 0.05,
+    }
+    total_conf = 0.0
+    total_weight = 0.0
+    for layer, ev in layer_evidence.items():
+        w = weights.get(layer, 0.0)
+        if w > 0:
+            total_conf += w * ev.confidence
+            total_weight += w
+    if total_weight > 0:
+        total_conf = total_conf / total_weight  # 归一化
+    # 应用阈值
+    verdict = _verdict_from_confidence(total_conf)
+    if total_conf < threshold:
+        verdict = Verdict.WEAK_INDICATION if total_conf > 0.2 else Verdict.NO_MATCH
+
+    return VerificationResult(
+        image_path=image_path,
+        verdict=verdict,
+        confidence=total_conf,
+        layer_evidence=layer_evidence,
+        signer_info=signer_info,
+        c2pa_manifest_path=c2pa_manifest_path,
+        semantic_similarity=semantic_sim,
+        phash_match=phash_match,
+    )
+
+
+def __parse_datetime(s: str):
+    """解析 datetime 字符串"""
+    from datetime import datetime
+    if not s:
+        return datetime.now()
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return datetime.now()

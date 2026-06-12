@@ -1,0 +1,43 @@
+teacher:
+  id: T1
+  name: Test
+  public_key_path: null
+  private_key_path: null
+watermark:
+  enabled_layers:
+  - L1_fingerprint
+  - L2_visible
+  - L3a_trustmark
+  - L3b_dwt_dct_svd
+  - L3c_cox_spread
+  - L4_semantic
+  - L5_metadata
+  - L6_c2pa
+  visible:
+    text: © 教师 2026
+    position: bottom-right
+    opacity: 0.3
+    perturbation_strength: 0.02
+    enable_perturbation: true
+  trustmark:
+    model_path: null
+    use_quantized: true
+  dwt_dct_svd:
+    alpha: 0.2
+    block_size: 4
+  cox_spread:
+    strength: 0.05
+    seed: 42
+  semantic:
+    injection_strength: 0.5
+    auto_suggest: true
+  metadata:
+    exif: true
+    xmp: true
+    custom_fields: {}
+  c2pa:
+    enable: true
+    algorithm: ES256
+verification:
+  similarity_threshold: 0.75
+  legal_export: true

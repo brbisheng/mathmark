@@ -1,0 +1,37 @@
+{
+  "$schema": "mathmark://signature/v1",
+  "teacher_id": "default",
+  "teacher_name": "默认教师",
+  "symbol": {
+    "conclusion_markers": ["∴", "故"],
+    "variable_primary": ["x", "y", "z"],
+    "set_notation": "∈",
+    "vector_notation": "\\vec{AB}"
+  },
+  "step": {
+    "introduction_phrases": ["设", "令", "记"],
+    "transition_words": ["化简得", "整理得", "代入"],
+    "conclusion_format": "故 {result}"
+  },
+  "example": {
+    "signature_problems": [
+      {
+        "id": "default-001",
+        "problem": "x^2 - 5x + 6 = 0",
+        "expected_factoring": "(x-2)(x-3) = 0",
+        "variants": ["x^2 - 7x + 12 = 0", "x^2 - 9x + 20 = 0"]
+      }
+    ],
+    "personal_problems": []
+  },
+  "visual": {
+    "arrow_style": "⟹",
+    "underline_style": "wavy",
+    "emphasis_style": "red-box"
+  },
+  "ocr": {
+    "engines": ["tesseract", "paddleocr"],
+    "languages": ["chi_sim", "eng"],
+    "preprocessing": ["deskew", "denoise"]
+  }
+}
