@@ -152,9 +152,9 @@ class VisibleSettings:
     # 默认带机器可读 ID 段, 截图 OCR 出来能直接溯源
     text: str = "© {teacher_id} {teacher_name}"
     position: str = "tiled"  # tiled | bottom-right | center
-    opacity: float = 0.18
-    font_size_ratio: float = 0.04   # 相对图像宽度的字体大小
-    color: tuple[int, int, int] = (255, 255, 255)
+    opacity: float = 0.55          # 0~1, 提高到 0.55 让水印在白底/浅底都明显
+    font_size_ratio: float = 0.06  # 相对图像宽度的字体大小, 0.06 在 1024px 宽 = ~62px 字
+    color: tuple[int, int, int] = (32, 32, 32)  # 默认深灰, 白底也能看见
     perturbation_strength: float = 0.02  # 对抗扰动强度
     enable_perturbation: bool = True
 

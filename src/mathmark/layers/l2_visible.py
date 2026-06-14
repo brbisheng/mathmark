@@ -104,7 +104,8 @@ def _get_chinese_font(size: int) -> ImageFont.FreeTypeFont:
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         # macOS
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -116,20 +117,44 @@ def _get_chinese_font(size: int) -> ImageFont.FreeTypeFont:
     for path in candidates:
         if Path(path).exists():
             try:
+                font = ImageFont.truetype(path, size)
+                return font
+            except Exception:
+                continue
+    # fallback: 找一个能加载的字体
+    fallbacks = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for path in fallbacks:
+        if Path(path).exists():
+            try:
                 return ImageFont.truetype(path, size)
             except Exception:
                 continue
-    # fallback
     return ImageFont.load_default()
+
+
+def _font_supports_cjk(font) -> bool:
+    """快速检查字体是否支持中文字符"""
+    try:
+        from PIL import Image, ImageDraw
+        test_img = Image.new("1", (100, 100), 0)
+        test_draw = ImageDraw.Draw(test_img)
+        # '数' 编码位
+        bbox = test_draw.textbbox((0, 0), "数", font=font)
+        return (bbox[2] - bbox[0]) > 5  # CJK 字符通常宽 > 10
+    except Exception:
+        return False
 
 
 def render_visible_watermark(
     image: np.ndarray,
     text: str,
     position: str = "bottom-right",
-    opacity: float = 0.3,
-    font_size_ratio: float = 0.04,
-    color: Tuple[int, int, int] = (255, 255, 255),
+    opacity: float = 0.55,
+    font_size_ratio: float = 0.06,
+    color: Tuple[int, int, int] = (32, 32, 32),
 ) -> np.ndarray:
     """在图像上叠加半透明文字水印
 
@@ -139,7 +164,7 @@ def render_visible_watermark(
         position: 位置 ("bottom-right", "bottom-left", "top-right", "top-left", "center", "tiled")
         opacity: 透明度 (0~1)
         font_size_ratio: 字体大小相对图像宽度
-        color: 文字颜色
+        color: 文字颜色, 默认深灰在白底上能看见
     """
     h, w = image.shape[:2]
     font_size = max(int(w * font_size_ratio), 16)
@@ -151,6 +176,8 @@ def render_visible_watermark(
 
     if position == "tiled":
         # 全图平铺 - 抗裁切
+        # 不要旋转: PIL 的 rotate 会对透明 RGBA 做抗锯齿, 把 alpha 摊薄, 视觉上就糊了
+        # 用更密的平铺 + 描边 + 更高不透明度来保证显眼
         _draw_tiled(draw, text, font, w, h, opacity, color)
     else:
         # 角落文字
@@ -185,9 +212,10 @@ def _draw_corner(
     }
     x, y = positions.get(position, positions["bottom-right"])
 
-    # 阴影
+    # 阴影: 与 color 互补色, 保证对比
+    shadow_color = _shadow_color(color)
     shadow_offset = max(2, font.size // 20)
-    draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=(0, 0, 0, int(opacity * 180)))
+    draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=(*shadow_color, int(opacity * 220)))
     # 主体
     draw.text((x, y), text, font=font, fill=(*color, int(opacity * 255)))
 
@@ -206,16 +234,32 @@ def _draw_tiled(
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
 
-    # 对角线方向的间距
-    spacing_x = int(tw * 2.0)
-    spacing_y = int(th * 3.0)
+    # 密铺: 间距更紧, 每行多几个, 视觉上更明显
+    spacing_x = int(tw * 1.4)
+    spacing_y = int(th * 2.2)
 
-    # 倾斜 - 视觉上更美观,也更难被边缘裁切清除
+    shadow_color = _shadow_color(color)
+    # 1 像素描边 (4 方向)
+    outline_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
     for y in range(-spacing_y, h + spacing_y, spacing_y):
         for x in range(-spacing_x, w + spacing_x, spacing_x):
             # 奇数行偏移, 形成交错
             offset = (spacing_x // 2) if (y // spacing_y) % 2 == 1 else 0
-            draw.text((x + offset, y), text, font=font, fill=(*color, int(opacity * 200)))
+            cx, cy = x + offset, y
+            # 描边 (深色) — 保证在白底或浅底都能看见
+            for dx, dy in outline_offsets:
+                draw.text((cx + dx, cy + dy), text, font=font,
+                          fill=(*shadow_color, int(opacity * 200)))
+            # 主体 — 几乎全不透明
+            draw.text((cx, cy), text, font=font,
+                      fill=(*color, int(opacity * 255)))
+
+
+def _shadow_color(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    """取 color 的对比色作为描边/阴影 — 浅色字用深色描边, 深色字用浅色描边"""
+    avg = sum(color) / 3
+    return (240, 240, 240) if avg < 128 else (16, 16, 16)
 
 
 # ============================================================
