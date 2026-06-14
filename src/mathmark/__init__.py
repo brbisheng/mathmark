@@ -11,6 +11,7 @@ from .core.config import (
     save_signature,
 )
 from .core.pipeline import WatermarkPipeline
+from .verify.extractor import extract_all, verify_image
 from .core.types import (
     BenchmarkResult,
     C2PASettings,
@@ -65,8 +66,10 @@ __all__ = [
     "__version__",
     "__author__",
     "create_default_config",
+    "extract_all",
     "load_config",
     "load_signature",
     "save_config",
     "save_signature",
+    "verify_image",
 ]

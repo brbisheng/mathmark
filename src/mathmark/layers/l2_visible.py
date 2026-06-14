@@ -226,6 +226,8 @@ def process(
     image: np.ndarray,
     settings: VisibleSettings,
     secret_key: bytes = b"mathmark-default-key-2026",
+    teacher_id: str = "",
+    teacher_name: str = "",
     output_path: Optional[PathLike] = None,
 ) -> Tuple[np.ndarray, LayerReport]:
     """L2 可见水印处理
@@ -233,6 +235,12 @@ def process(
     1. 添加半透明文字水印 (宣示所有权)
     2. 应用对抗扰动 (抗 AI 修复攻击)
     """
+    # 把 settings.text 里的占位符替换成实际 ID + 名字, 让截图就能溯源
+    resolved_text = settings.text.format(
+        teacher_id=teacher_id or "TEACHER",
+        teacher_name=teacher_name or "",
+    ).strip()
+
     with measure_time("L2_visible") as timer:
         try:
             result = image.copy()
@@ -240,7 +248,7 @@ def process(
             # 步骤1: 可见文字水印
             result = render_visible_watermark(
                 result,
-                text=settings.text,
+                text=resolved_text,
                 position=settings.position,
                 opacity=settings.opacity,
                 font_size_ratio=settings.font_size_ratio,
@@ -261,7 +269,7 @@ def process(
                 layer=LayerType.VISIBLE,
                 success=True,
                 duration_ms=timer.duration_ms,
-                message=f"visible text='{settings.text[:20]}', position={settings.position}, "
+                message=f"visible text='{resolved_text[:30]}', position={settings.position}, "
                         f"perturbation={'on' if perturbation_applied else 'off'}",
                 metadata={
                     "text": settings.text,

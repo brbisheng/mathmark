@@ -149,9 +149,10 @@ class MathSignature:
 @dataclass
 class VisibleSettings:
     """L2 可见水印配置"""
-    text: str = "© 教师 2026"
-    position: str = "bottom-right"  # bottom-right | tiled | center
-    opacity: float = 0.3
+    # 默认带机器可读 ID 段, 截图 OCR 出来能直接溯源
+    text: str = "© {teacher_id} {teacher_name}"
+    position: str = "tiled"  # tiled | bottom-right | center
+    opacity: float = 0.18
     font_size_ratio: float = 0.04   # 相对图像宽度的字体大小
     color: tuple[int, int, int] = (255, 255, 255)
     perturbation_strength: float = 0.02  # 对抗扰动强度
@@ -278,6 +279,7 @@ class WatermarkResult:
     phash: Optional[str] = None
     semantic_injection_log: list[dict[str, Any]] = field(default_factory=list)
     c2pa_manifest_path: Optional[Path] = None
+    exif_bytes: Optional[bytes] = None
 
     # 性能
     total_duration_ms: float = 0.0

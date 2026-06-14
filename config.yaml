@@ -14,9 +14,9 @@ watermark:
   - L5_metadata
   - L6_c2pa
   visible:
-    text: © 教师 2026
-    position: bottom-right
-    opacity: 0.3
+    text: "© {teacher_id} {teacher_name}"
+    position: tiled
+    opacity: 0.18
     perturbation_strength: 0.02
     enable_perturbation: true
   trustmark:

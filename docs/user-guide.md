@@ -135,10 +135,9 @@ verification:
 ```bash
 # 1. 准备 PPT
 mathmark sign --problem "x^2-5x+6=0" -c config.yaml
-mathmark inject lesson.pptx signed_lesson.pptx  # 注入水印(可选)
 
 # 2. 截图
-screenshot signed_lesson.pptx → lesson_screenshot.png
+screenshot lesson.pptx → lesson_screenshot.png
 
 # 3. 加水印
 mathmark embed lesson_screenshot.png marked/lesson_screenshot.png
@@ -163,15 +162,6 @@ open evidence.pdf
 - 在平台提交版权投诉
 - 用 PDF 报告作为法律证据
 - 在签名清单中查询被偷的图
-
-### 场景 3: 多种内容类型
-
-MathMark 自动适配:
-
-- **PPT 导出图**: 用 `--content-type ppt_export`
-- **印刷体截图**: 用 `--content-type printed_math`
-- **手写板书**: 用 `--content-type handwritten`
-- **混合**: 用 `--content-type mixed`
 
 ## 常见问题
 

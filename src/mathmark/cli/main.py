@@ -223,7 +223,6 @@ def embed(
         from ..core.config import load_signature
         sig = load_signature(signature)
         cfg.semantic.signature = sig
-        cfg.semantic.signature = sig  # 已在上面设置
         # 同时更新 L4 配置
         from ..core.types import SemanticSettings
         cfg.semantic = SemanticSettings(signature=sig, injection_strength=cfg.semantic.injection_strength)

@@ -117,13 +117,13 @@ def _build_config(data: dict[str, Any]) -> WatermarkConfig:
     return WatermarkConfig(
         teacher_id=teacher.get("id", "unknown"),
         teacher_name=teacher.get("name", ""),
-        teacher_public_key_path=Path(teacher["public_key_path"]) if teacher.get("public_key_path") else None,
-        teacher_private_key_path=Path(teacher["private_key_path"]) if teacher.get("private_key_path") else None,
+        teacher_public_key_path=Path(teacher["public_key_path"]).expanduser() if teacher.get("public_key_path") else None,
+        teacher_private_key_path=Path(teacher["private_key_path"]).expanduser() if teacher.get("private_key_path") else None,
         enabled_layers=enabled_layers,
         visible=VisibleSettings(
-            text=visible_d.get("text", "© 教师 2026"),
-            position=visible_d.get("position", "bottom-right"),
-            opacity=visible_d.get("opacity", 0.3),
+            text=visible_d.get("text", "© {teacher_id} {teacher_name}"),
+            position=visible_d.get("position", "tiled"),
+            opacity=visible_d.get("opacity", 0.18),
             perturbation_strength=visible_d.get("perturbation_strength", 0.02),
             enable_perturbation=visible_d.get("enable_perturbation", True),
         ),
@@ -147,8 +147,8 @@ def _build_config(data: dict[str, Any]) -> WatermarkConfig:
         metadata=MetadataSettings(
             write_exif=metadata_d.get("exif", True),
             write_xmp=metadata_d.get("xmp", True),
-            copyright=metadata_d.get("custom_fields", {}).get("copyright", ""),
-            contact=metadata_d.get("custom_fields", {}).get("contact", ""),
+            copyright=metadata_d.get("copyright", ""),
+            contact=metadata_d.get("contact", ""),
             custom_fields=metadata_d.get("custom_fields", {}),
         ),
         c2pa=C2PASettings(
@@ -200,6 +200,8 @@ def save_config(config: WatermarkConfig, path: PathLike) -> None:
             "metadata": {
                 "exif": config.metadata.write_exif,
                 "xmp": config.metadata.write_xmp,
+                "copyright": config.metadata.copyright,
+                "contact": config.metadata.contact,
                 "custom_fields": config.metadata.custom_fields,
             },
             "c2pa": {

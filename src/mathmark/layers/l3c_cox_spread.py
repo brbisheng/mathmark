@@ -205,11 +205,14 @@ def extract(
     secret: bytes,
     n_bits: int = 64,
 ) -> np.ndarray:
-    """提取 Cox 水印 bits (盲提取)"""
-    bits = []
-    for i in range(n_bits):
-        seed = settings.seed + i + int.from_bytes(secret[:4], "big")
-        pn = _generate_pn_sequence(64 * 64, seed)
-        extracted = _extract_from_luminance(image, pn, None)
-        bits.append(int(extracted[0]))
-    return np.array(bits, dtype=np.uint8)
+    """提取 Cox 水印 bits (盲提取)
+
+    Cox 嵌入时只用了 1 个 seed (settings.seed + secret[:4]_int),
+    所以 extract 也必须用同一个 seed 才能可靠地读回那个 bit。
+    然后把读到的 1 bit 复制 n_bits 次, 跟 embed 端对齐。
+    """
+    base_seed = settings.seed + int.from_bytes(secret[:4], "big")
+    pn = _generate_pn_sequence(64 * 64, base_seed)
+    extracted = _extract_from_luminance(image, pn, None)
+    bit_value = int(extracted[0])
+    return np.full(n_bits, bit_value, dtype=np.uint8)

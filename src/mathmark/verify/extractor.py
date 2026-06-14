@@ -21,7 +21,7 @@ from ..core.types import (
     VerificationResult,
     WatermarkConfig,
 )
-from ..crypto.hashing import sha256_bytes
+from ..crypto.hashing import sha256_bytes, sha256_bytes_raw
 from ..crypto.keys import verify_signature
 from ..layers import (
     l1_fingerprint,
@@ -33,7 +33,7 @@ from ..layers import (
     l6_c2pa,
 )
 from ..semantic.recognizer import recognize_from_image
-from ..utils.image_io import load_image
+from ..utils.image_io import hamming_similarity, load_image
 
 PathLike = Union[str, Path]
 
@@ -61,7 +61,7 @@ def extract_all(
 
     # 派生 secret (与 embed 时相同)
     secret_str = f"{config.teacher_id}:{config.teacher_name}"
-    secret = sha256_bytes(secret_str.encode("utf-8"))
+    secret = sha256_bytes_raw(secret_str.encode("utf-8"))
 
     results: dict[LayerType, Optional[bytes]] = {}
 
@@ -133,12 +133,46 @@ def verify_image(
     if config.is_enabled(LayerType.FINGERPRINT):
         try:
             fp = l1_fingerprint.compute_fingerprint(pil_img)
-            evidence = Evidence(
+            # L1 没法独立判定"是否匹配", 必须有参照 phash. 优先从 manifest sidecar 读原始 phash
+            ref_phash: Optional[str] = None
+            for p in [
+                image_path.with_suffix(image_path.suffix + ".manifest.json"),
+                image_path.parent / (image_path.stem + ".manifest.json"),
+            ]:
+                if p.exists():
+                    try:
+                        mdata = json.loads(p.read_text(encoding="utf-8"))
+                        for a in mdata.get("assertions", []):
+                            if a.get("label") == "mathmark.signature":
+                                ref_phash = a.get("data", {}).get("perceptual_hash") or None
+                                break
+                        if ref_phash:
+                            break
+                    except Exception:
+                        continue
+
+            if ref_phash and fp.phash:
+                sim = hamming_similarity(ref_phash, fp.phash)
+                matched = sim >= threshold
+                confidence = sim
+            else:
+                # 找不到参照, 保守返回 0 (没法独立证伪/证实)
+                sim = 0.0
+                matched = False
+                confidence = 0.0
+
+            layer_evidence[LayerType.FINGERPRINT] = Evidence(
                 layer=LayerType.FINGERPRINT,
-                confidence=0.0,
-                details={"phash": fp.phash, "dhash": fp.dhash, "whash": fp.whash or ""},
+                confidence=confidence,
+                matched=matched,
+                details={
+                    "phash": fp.phash,
+                    "dhash": fp.dhash,
+                    "whash": fp.whash or "",
+                    "ref_phash": ref_phash or "",
+                    "hamming_similarity": sim,
+                },
             )
-            layer_evidence[LayerType.FINGERPRINT] = evidence
         except Exception:
             layer_evidence[LayerType.FINGERPRINT] = Evidence(
                 layer=LayerType.FINGERPRINT, confidence=0.0, matched=False,
@@ -167,12 +201,18 @@ def verify_image(
 
     # ================ L3: 不可见水印 (通过提取的 bits) ================
     bits_dict = extract_all(image_path, config)
-    # 期望的 teacher_id bits
-    expected_bits = np.frombuffer(
+    # 期望的 teacher_id bits (给 L3b 用 - 它直接用 teacher_id 作 payload)
+    expected_bits_l3b = np.frombuffer(
         (config.teacher_id.encode("utf-8") * 4)[:32], dtype=np.uint8
     )[:32] % 2
-    if len(expected_bits) < 32:
-        expected_bits = np.concatenate([expected_bits, np.zeros(32 - len(expected_bits), dtype=np.uint8)])
+    if len(expected_bits_l3b) < 32:
+        expected_bits_l3b = np.concatenate([expected_bits_l3b, np.zeros(32 - len(expected_bits_l3b), dtype=np.uint8)])
+
+    # L3a 的预期 bits: 必须用 embed 时同一份 secret 派生 (pipeline._derive_secret 同款公式)
+    from ..layers.l3a_trustmark import _secret_to_bits as l3a_secret_to_bits
+    secret_str = f"{config.teacher_id}:{config.teacher_name}"
+    secret = sha256_bytes_raw(secret_str.encode("utf-8"))
+    expected_bits_l3a = l3a_secret_to_bits(secret, 100)  # 与 embed 的 n_bits 对齐
 
     for layer in [LayerType.INVISIBLE_TRUSTMARK, LayerType.INVISIBLE_DWT, LayerType.INVISIBLE_COX]:
         if not config.is_enabled(layer):
@@ -181,17 +221,66 @@ def verify_image(
         if bits_bytes is None:
             layer_evidence[layer] = Evidence(layer=layer, confidence=0.0, matched=False)
             continue
-        # 计算与期望 teacher_id bits 的一致度
-        extracted_arr = np.frombuffer(bits_bytes, dtype=np.uint8)[:32]
-        if len(extracted_arr) < 32:
-            extracted_arr = np.concatenate([extracted_arr, np.zeros(32 - len(extracted_arr), dtype=np.uint8)])
-        ber = float(np.mean(extracted_arr != expected_bits))
-        confidence = 1.0 - ber
+
+        extracted_arr = np.frombuffer(bits_bytes, dtype=np.uint8)
+
+        if layer == LayerType.INVISIBLE_COX:
+            # L3c 只嵌入 1 bit, 重复到 n_bits. "匹配" 判定: 64 个 bit 是否一致
+            # (presence detector: 一致说明是被 embed 过的图)
+            if len(extracted_arr) == 0:
+                confidence = 0.0
+                ber = 1.0
+            else:
+                unique_bits = np.unique(extracted_arr)
+                if len(unique_bits) == 1:
+                    # 所有 bit 一致 → Cox 嵌入存在
+                    confidence = 0.9
+                    ber = 0.0
+                else:
+                    # 提取出多于一种 bit 值 → 未嵌入或被破坏
+                    majority = int(np.bincount(extracted_arr).argmax())
+                    frac_majority = float(np.mean(extracted_arr == majority))
+                    confidence = frac_majority
+                    ber = 1.0 - frac_majority
+            layer_evidence[layer] = Evidence(
+                layer=layer,
+                confidence=confidence,
+                matched=confidence > 0.7,
+                details={"ber": ber, "n_bits": len(extracted_arr), "detector": "presence"},
+            )
+            continue
+
+        # L3a: 100 bits from secret; L3b: 32 bits from teacher_id
+        if layer == LayerType.INVISIBLE_TRUSTMARK:
+            expected = expected_bits_l3a
+        else:
+            expected = expected_bits_l3b
+
+        if len(extracted_arr) < len(expected):
+            extracted_arr = np.concatenate([extracted_arr, np.zeros(len(expected) - len(extracted_arr), dtype=np.uint8)])
+        extracted_arr = extracted_arr[:len(expected)]
+        ber = float(np.mean(extracted_arr != expected))
+
+        if layer == LayerType.INVISIBLE_TRUSTMARK and ber > 0.3:
+            # L3a fallback (DCT) 在 PNG 来回后 BER 天然就高 (~0.4).
+            # 这种情况给 "弱存在" 信号: 不当作匹配, 但也不是 0.
+            # 装上 trustmark lib + onnx 模型后 BER 会回到 ~0.
+            confidence = 0.4
+            matched = False
+            details_label = "fallback-degraded"
+        else:
+            confidence = 1.0 - ber
+            matched = confidence > 0.7
+            details_label = None
+
+        details = {"ber": ber, "n_bits": len(extracted_arr)}
+        if details_label:
+            details["mode"] = details_label
         layer_evidence[layer] = Evidence(
             layer=layer,
             confidence=confidence,
-            matched=confidence > 0.7,
-            details={"ber": ber, "n_bits": len(extracted_arr)},
+            matched=matched,
+            details=details,
         )
 
     # ================ L5: 元数据 ================

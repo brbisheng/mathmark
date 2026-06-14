@@ -61,7 +61,7 @@ mathmark sign --problem "x^2-5x+6=0" --variant "x^2-7x+12=0"
 ### 3. 添加水印
 
 ```bash
-mathmark embed --input lesson1.png --output marked/ --layers all
+mathmark embed lesson1.png marked/ --layers all
 ```
 
 ### 4. 验证归属

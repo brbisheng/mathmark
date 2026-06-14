@@ -69,6 +69,7 @@ def save_image(
     path: PathLike,
     quality: int = 95,
     preserve_exif: bool = True,
+    exif_bytes: Optional[bytes] = None,
     **kwargs,
 ) -> None:
     """保存图像
@@ -78,6 +79,7 @@ def save_image(
         path: 输出路径
         quality: JPEG/WebP 质量
         preserve_exif: 是否保留 EXIF
+        exif_bytes: 显式提供的 EXIF bytes (优先于 img.info["exif"])
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +113,12 @@ def save_image(
     elif suffix == ".png":
         save_kwargs["optimize"] = True
     save_kwargs.update(kwargs)
+
+    # 把 EXIF 真正写进文件 (PNG 需要显式传 exif=, JPEG 会自动保留)
+    if preserve_exif:
+        eb = exif_bytes or pil_img.info.get("exif")
+        if eb:
+            save_kwargs["exif"] = eb
 
     pil_img.save(str(path), **save_kwargs)
 

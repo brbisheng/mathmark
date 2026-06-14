@@ -163,6 +163,12 @@ def _fallback_embed(
     """降级方案:基于 8x8 DCT 中频的水印嵌入
 
     抗 JPEG 压缩, 抗轻量噪声。
+
+    注意: 此 fallback 仅供 trustmark 模型不可用时降级使用. 实际生效请装:
+        pip install trustmark onnxruntime
+        # 并下载 trustmark.onnx 到 ~/.mathmark/models/
+    Fallback 在 PNG 保存/读取后 BER 较高 (~0.4), 不足以作为
+    唯一证据, 仅作为 'MathMark 处理过' 的弱信号.
     """
     h, w = image.shape[:2]
     if image.ndim == 3:

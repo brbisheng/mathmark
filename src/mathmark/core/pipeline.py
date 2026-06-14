@@ -117,6 +117,8 @@ class WatermarkPipeline:
                     result.image,
                     self.config.visible,
                     secret_key=secret,
+                    teacher_id=self.config.teacher_id,
+                    teacher_name=self.config.teacher_name,
                 )
                 result.layer_reports[LayerType.VISIBLE] = report
                 _progress(LayerType.VISIBLE)
@@ -219,6 +221,8 @@ class WatermarkPipeline:
                     signature_hash=sig_hash,
                 )
                 result.layer_reports[LayerType.METADATA] = report
+                # 把 L5 构造的 EXIF bytes 留着, 后面 save_image 时用, 避免 numpy roundtrip 丢失
+                result.exif_bytes = meta_data.get("exif_bytes")
                 _progress(LayerType.METADATA)
             except Exception as e:
                 result.layer_reports[LayerType.METADATA] = LayerReport(
@@ -257,7 +261,12 @@ class WatermarkPipeline:
         # 保存输出
         if output_path:
             from ..utils.image_io import save_image
-            save_image(result.image, output_path, quality=95)
+            save_image(
+                result.image,
+                output_path,
+                quality=95,
+                exif_bytes=getattr(result, "exif_bytes", None),
+            )
 
         return result
 

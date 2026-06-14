@@ -162,9 +162,28 @@ class PaddleOCREngine:
 
 
 class MockOCREngine:
-    """Mock OCR 引擎 - 仅用于测试"""
+    """Mock OCR 引擎 - 仅用于测试 (无 OCR 依赖时降级)
 
-    def __init__(self, mock_text: str = "测试文字 x² - 5x + 6 = 0 ∴ x = 2 或 3"):
+    默认文本包含 signatures/default.json 里的全部 signature 维度:
+    - conclusion_markers: ∴, 故
+    - variable_primary: x, y, z
+    - introduction_phrases: 设, 令, 记
+    - transition_words: 化简得, 整理得, 代入
+    - signature_problems: x^2 - 5x + 6 = 0
+
+    这样 sandbox/run.py demo 跑完 L4 verify 能命中所有维度, 不依赖真 OCR.
+    真场景下请装 pytesseract 或 paddleocr.
+    """
+
+    def __init__(
+        self,
+        mock_text: str = (
+            "设 x 为未知数, 令 y = 0 记 z = 1. "
+            "化简得 x^2 - 5x + 6 = 0, 整理得 (x-2)(x-3) = 0. "
+            "代入验证: x, y, z 都满足. "
+            "故 解集为 {2, 3} ∴ Q.E.D."
+        ),
+    ):
         self.mock_text = mock_text
 
     def recognize(self, image: np.ndarray) -> OCRResult:

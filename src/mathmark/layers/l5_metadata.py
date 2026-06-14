@@ -193,6 +193,8 @@ def process(
                 pil_img = write_exif(pil_img, settings, teacher_id, signature_hash)
                 result["exif_written"] = True
                 result["exif"] = read_exif(pil_img)
+                # 把 EXIF bytes 留给 pipeline/verify, 不让它在 numpy roundtrip 里丢
+                result["exif_bytes"] = pil_img.info.get("exif")
 
             # 构造 XMP packet
             if settings.write_xmp:
