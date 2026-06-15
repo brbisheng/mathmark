@@ -151,20 +151,26 @@ def _font_supports_cjk(font) -> bool:
 def render_visible_watermark(
     image: np.ndarray,
     text: str,
-    position: str = "bottom-right",
-    opacity: float = 0.20,
-    font_size_ratio: float = 0.03,
+    position: str = "diagonal_scatter",
+    opacity: float = 0.30,
+    font_size_ratio: float = 0.04,
     color: Tuple[int, int, int] = (160, 160, 160),
+    scatter_count_x: int = 3,
+    scatter_count_y: int = 2,
+    scatter_angle: float = -30.0,
 ) -> np.ndarray:
     """在图像上叠加半透明文字水印
 
     Args:
         image: 输入图像 (H, W, 3), uint8
         text: 水印文字
-        position: 位置 ("bottom-right", "bottom-left", "top-right", "top-left", "center", "tiled")
-        opacity: 透明度 (0~1)
+        position: 位置 ("diagonal_scatter", "tiled", "bottom-right", "bottom-left",
+                           "top-right", "top-left", "center")
+        opacity: 透明度 (0~1) — multiply 模式下用作 mask 灰度 (color × opacity)
         font_size_ratio: 字体大小相对图像宽度
         color: 文字颜色, 默认浅灰配合 multiply 混合
+        scatter_count_x/y: diagonal_scatter 模式下的网格数
+        scatter_angle: diagonal_scatter 模式下每个实例的倾斜角 (度)
     """
     h, w = image.shape[:2]
     font_size = max(int(w * font_size_ratio), 16)
@@ -172,14 +178,21 @@ def render_visible_watermark(
     pil_img = Image.fromarray(image)
     font = _get_chinese_font(font_size)
 
-    if position == "tiled":
-        # 全图平铺 - 抗裁切, 用 multiply 混合保护正文
-        # 灰度 mask: 文字像素 = color 灰度, 背景 = 255 (白) → multiply 不影响白底
-        # 正文是黑色 (≈0), multiply 后仍是 ≈0 → 水印在正文下不可见, 不盖字
-        gray = sum(color) // 3
+    if position in ("tiled", "diagonal_scatter"):
+        # 散布 / 平铺模式 - 用 multiply 混合保护正文
+        # 灰度 mask: 文字像素 = color 灰度 × opacity (越透明越白), 背景 = 255
+        # 与原图 multiply 后: 白底变浅灰 (水印可见), 黑字不变 (数学不被遮挡)
+        gray = int(sum(color) // 3 * opacity)  # 灰度按 opacity 缩放
+        gray = max(min(gray, 255), 0)
         mask = Image.new("L", pil_img.size, 255)
         mask_draw = ImageDraw.Draw(mask)
-        _draw_tiled(mask_draw, text, font, w, h, gray)
+        if position == "diagonal_scatter":
+            _draw_diagonal_scatter(
+                mask_draw, text, font, w, h, gray,
+                count_x=scatter_count_x, count_y=scatter_count_y, angle=scatter_angle,
+            )
+        else:  # tiled (back-compat)
+            _draw_tiled(mask_draw, text, font, w, h, gray)
         result = ImageChops.multiply(pil_img.convert("RGB"), mask.convert("RGB"))
     else:
         # 角落文字 - 保留 alpha 混合 (角落通常不在正文区)
@@ -252,6 +265,86 @@ def _draw_tiled(
             cx, cy = x + offset, y
             # 主体 (灰度值, 0=黑, 255=白; 与 multiply mask 配合)
             draw.text((cx, cy), text, font=font, fill=gray)
+
+
+def _draw_diagonal_scatter(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font,
+    w: int,
+    h: int,
+    gray: int,
+    count_x: int = 3,
+    count_y: int = 2,
+    angle: float = -30.0,
+) -> None:
+    """对角散布水印 - 路透/法新风格 (折衷方案)
+
+    在 count_x × count_y 网格上散布 count_x*count_y 个文字实例,
+    奇偶行/列偏移半个 spacing 形成砖墙式覆盖。
+    每个实例独立旋转 angle 度, 看起来像盖章而不是平铺。
+
+    灰度 mask 模式: 文字像素 = gray, 背景 = 255.
+    关键: 用 RGBA + alpha 旋转避免 BICUBIC 在 L 图上产生黑角。
+    """
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+
+    # 网格间距 (基于 count 而非密铺)
+    spacing_x = w / (count_x + 0.5)
+    spacing_y = h / (count_y + 0.5)
+
+    # 用大画布容纳旋转后的文本 (旋转 expand=True 后, 边长按 cos+sin 比例放大)
+    # 1.4 倍对 -30°~30° 都够用
+    pad = int(max(tw, th) * 0.4)
+    canvas_w = tw + pad * 2
+    canvas_h = th + pad * 2
+
+    # 拿到主 mask 图像
+    main_mask = draw._image  # type: ignore[attr-defined]
+
+    for row in range(count_y):
+        for col in range(count_x):
+            # 砖墙式偏移
+            x_off = (spacing_x / 2) if (row % 2 == 1) else 0
+            y_off = (spacing_y / 2) if (col % 2 == 1) else 0
+
+            cx = int(spacing_x * (col + 0.5) + x_off)
+            cy = int(spacing_y * (row + 0.5) + y_off)
+
+            # RGBA 透明画布: 文字=不透明灰, 背景=全透明
+            # 这样旋转时 alpha=0 的区域不会被插值成黑
+            stamp = Image.new("RGBA", (canvas_w, canvas_h), (gray, gray, gray, 0))
+            stamp_draw = ImageDraw.Draw(stamp)
+            stamp_draw.text((pad, pad), text, font=font, fill=(gray, gray, gray, 255))
+
+            # 旋转, expand=True 让画布放大到能容纳完整旋转内容
+            stamp = stamp.rotate(angle, resample=Image.BICUBIC, expand=True)
+
+            # 计算粘贴位置 (居中于 cx, cy)
+            sw, sh = stamp.size
+            px = cx - sw // 2
+            py = cy - sh // 2
+
+            # 完全在画布外 → 跳过
+            if px + sw <= 0 or py + sh <= 0 or px >= w or py >= h:
+                continue
+
+            # 裁剪到主 mask 范围
+            src_x0 = max(0, -px)
+            src_y0 = max(0, -py)
+            src_x1 = min(sw, w - px)
+            src_y1 = min(sh, h - py)
+            dst_x0 = max(0, px)
+            dst_y0 = max(0, py)
+
+            stamp_cropped = stamp.crop((src_x0, src_y0, src_x1, src_y1))
+            # 提取 alpha 作为 mask, 保证透明区域不覆盖主 mask 的 255
+            stamp_alpha = stamp_cropped.split()[3]
+            stamp_l = stamp_cropped.convert("L")
+
+            main_mask.paste(stamp_l, (dst_x0, dst_y0), mask=stamp_alpha)
 
 
 def _shadow_color(color: Tuple[int, int, int]) -> Tuple[int, int, int]:

@@ -15,8 +15,13 @@ watermark:
   - L6_c2pa
   visible:
     text: "© {teacher_id} {teacher_name}"
-    position: tiled
-    opacity: 0.20
+    position: diagonal_scatter
+    opacity: 0.30
+    font_size_ratio: 0.04
+    color: [160, 160, 160]
+    scatter_count_x: 3
+    scatter_count_y: 2
+    scatter_angle: -30.0
     perturbation_strength: 0.02
     enable_perturbation: true
   trustmark:

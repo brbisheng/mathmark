@@ -148,14 +148,25 @@ class MathSignature:
 
 @dataclass
 class VisibleSettings:
-    """L2 可见水印配置"""
+    """L2 可见水印 - 自媒体友好的折衷设计
+
+    关键设计: 配合 multiply 混合, 灰度 mask 上的文字像素 = color 灰度, 背景 = 255.
+    与原图 multiply 后:
+    - 白底 (255) × 灰水印 (160) = 160 (灰, 可见)
+    - 黑字 (0) × 灰水印 (160) = 0 (黑, 不变) ← **数学内容不被遮挡**
+
+    位置: tiled → diagonal_scatter (路透社风格: 6-8 个对角小字散布, 不规则,
+    裁任何一边都至少剩 2-3 个, 不像在图上写字)
+    """
     # 默认带机器可读 ID 段, 截图 OCR 出来能直接溯源
     text: str = "© {teacher_id} {teacher_name}"
-    position: str = "tiled"  # tiled | bottom-right | center
-    # 0.20 + 浅灰 + multiply 混合: 在白底可见, 但不掩盖正文 (正文黑色区域水印 = 几乎不变化)
-    opacity: float = 0.20          # 0~1, 配合 multiply 混合 = 视觉柔和不刺眼
-    font_size_ratio: float = 0.03  # 相对图像宽度, 0.03 在 1024px 宽 = ~30px 字 (与正文同量级)
+    position: str = "diagonal_scatter"  # diagonal_scatter | tiled | bottom-right | center
+    opacity: float = 0.30                # 0~1, 配合 multiply 混合 = 视觉柔和不刺眼
+    font_size_ratio: float = 0.04        # 相对图像宽度, 0.04 在 1024px 宽 = ~40px 字
     color: tuple[int, int, int] = (160, 160, 160)  # 中浅灰, multiply 混合下不刺眼
+    scatter_count_x: int = 3             # 水平方向实例数
+    scatter_count_y: int = 2             # 垂直方向实例数 (3x2=6, 错开后 7-8)
+    scatter_angle: float = -30.0         # 倾斜角度 (度)
     perturbation_strength: float = 0.02  # 对抗扰动强度
     enable_perturbation: bool = True
 
