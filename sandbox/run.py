@@ -93,7 +93,16 @@ def cmd_verify(src: Path) -> None:
         print(f"✗ Not a file: {src}")
         sys.exit(1)
     cfg = _load_cfg()
-    res = verify_image(src, cfg)
+    # Load teacher's public key for L6 manifest signature verification.
+    # Without this, audit B1 correctly refuses to verify the signed manifest.
+    pub_key = None
+    if cfg.teacher_public_key_path and Path(cfg.teacher_public_key_path).exists():
+        from mathmark.crypto.keys import load_public_key
+        try:
+            pub_key = load_public_key(cfg.teacher_public_key_path)
+        except Exception:
+            pub_key = None
+    res = verify_image(src, cfg, public_key=pub_key)
 
     print(f"[verify] {src}")
     print(f"   overall score : {res.confidence:.3f}")

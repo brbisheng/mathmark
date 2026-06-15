@@ -74,13 +74,21 @@ def bit_voting(
     # 投票: 对每个 bit, 取多数
     consensus = (np.sum(bits_array, axis=0) > bits_array.shape[0] / 2).astype(np.uint8)
 
-    # 计算一致性: 平均 pairwise agreement
+    # 一致性: 平均 pairwise agreement, 但用 bit entropy 加权
+    # (audit B11: 全 0 或全 1 的全一致投票会得到 confidence=1.0 → 假阳性)
     n_methods = bits_array.shape[0]
     agreements = []
     for i in range(n_methods):
         for j in range(i + 1, n_methods):
             agreements.append(np.mean(bits_array[i] == bits_array[j]))
-    confidence = np.mean(agreements) if agreements else 0.0
+    agreement_mean = float(np.mean(agreements)) if agreements else 0.0
+
+    # 按 bit 计算: p_one = mean(methods 的 1 比例), entropy = 1 - 2|p_one - 0.5|
+    #   p_one = 0 或 1 → entropy = 0 (全 0 或全 1 → 不信任)
+    #   p_one = 0.5   → entropy = 1 (真正随机的 1:1 一致 → 高置信)
+    p_one = np.mean(bits_array, axis=0)
+    entropy = float(np.mean(1.0 - 2.0 * np.abs(p_one - 0.5)))
+    confidence = agreement_mean * entropy
 
     return ConsensusResult(
         consensus_bits=consensus,

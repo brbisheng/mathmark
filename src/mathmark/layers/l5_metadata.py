@@ -196,23 +196,13 @@ def process(
                 # 把 EXIF bytes 留给 pipeline/verify, 不让它在 numpy roundtrip 里丢
                 result["exif_bytes"] = pil_img.info.get("exif")
 
-            # 构造 XMP packet
+            # 构造 XMP packet - audit B12: 之前把 XMP 截断后塞进 EXIF ImageDescription,
+            # 不是真正的 XMP packet. 现在返回 xmp_bytes, 由 save_image 写到 APP1/iTXt.
             if settings.write_xmp:
                 xmp = build_xmp_packet(settings, teacher_id, signature_hash)
                 result["xmp"] = xmp
                 result["xmp_written"] = True
-                # XMP 嵌入到 EXIF 1st IFD
-                try:
-                    exif_bytes = pil_img.info.get("exif", piexif.dump({"0th": {}, "Exif": {}}))
-                    exif_dict = piexif.load(exif_bytes)
-                    # 注意: piexif 不直接支持 XMP, 这里把 XMP 嵌入 UserComment
-                    # 实际 XMP 应作为 APP1 段写入 JPEG, 这里简化处理
-                    exif_dict["0th"][piexif.ImageIFD.ImageDescription] = (
-                        f"MathMark XMP embedded. Raw XMP:\n{xmp[:200]}..."
-                    ).encode("utf-8")
-                    pil_img.info["exif"] = piexif.dump(exif_dict)
-                except Exception as e:
-                    result["xmp_warning"] = str(e)
+                result["xmp_bytes"] = xmp.encode("utf-8")
 
             result_img = np.array(pil_img, dtype=np.uint8)
 

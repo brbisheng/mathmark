@@ -1,6 +1,6 @@
 """密钥管理
 
-使用 Ed25519 高效签名(也支持 RSA)
+使用 Ed25519 高效签名(也支持 RSA / ECDSA)
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Tuple, Union
 
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
     PublicKeyTypes,
@@ -53,7 +53,10 @@ def generate_keypair(algorithm: str = "ed25519") -> KeyPair:
         algorithm: "ed25519" / "rsa-2048" / "ec-p256"
     """
     if algorithm == "ed25519":
-        private_key = ec.generate_private_key(ec.SECP256K1())  # 替代 ed25519(库不支持),用 SECP256K1
+        # audit B8: 之前这里偷偷用 SECP256K1 + ECDSA 顶替 ed25519,
+        # manifest 记录 "ed25519" 但签名实际是 ECDSA, verify 一方按 ed25519
+        # 校验会失败. cryptography 库本身支持 ed25519, 现在真的用它.
+        private_key = ed25519.Ed25519PrivateKey.generate()
         public_key = private_key.public_key()
     elif algorithm == "rsa-2048":
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -101,7 +104,9 @@ def load_keypair(private_path: PathLike, password: bytes = None) -> KeyPair:
     public_key = private_key.public_key()
 
     # 检测算法
-    if isinstance(private_key, ec.EllipticCurvePrivateKey):
+    if isinstance(private_key, ed25519.Ed25519PrivateKey):
+        algorithm = "ed25519"
+    elif isinstance(private_key, ec.EllipticCurvePrivateKey):
         algorithm = "ec"
     elif isinstance(private_key, rsa.RSAPrivateKey):
         algorithm = "rsa"
@@ -120,11 +125,14 @@ def load_public_key(public_path: PathLike) -> PublicKeyTypes:
 # 签名 / 验签
 # ============================================================
 
-def sign_data(private_key: PrivateKeyTypes, data: bytes, algorithm: str = "ec") -> bytes:
+def sign_data(private_key: PrivateKeyTypes, data: bytes, algorithm: str = "ed25519") -> bytes:
     """用私钥对数据签名"""
-    if algorithm in ("ec", "ed25519") or isinstance(private_key, ec.EllipticCurvePrivateKey):
+    if isinstance(private_key, ed25519.Ed25519PrivateKey):
+        # ed25519 不需要单独的 hash 步骤, 内部自带
+        return private_key.sign(data)
+    if isinstance(private_key, ec.EllipticCurvePrivateKey):
         return private_key.sign(data, ec.ECDSA(hashes.SHA256()))
-    elif isinstance(private_key, rsa.RSAPrivateKey):
+    if isinstance(private_key, rsa.RSAPrivateKey):
         return private_key.sign(
             data,
             padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
@@ -136,7 +144,9 @@ def sign_data(private_key: PrivateKeyTypes, data: bytes, algorithm: str = "ec") 
 def verify_signature(public_key: PublicKeyTypes, data: bytes, signature: bytes) -> bool:
     """用公钥验签"""
     try:
-        if isinstance(public_key, ec.EllipticCurvePublicKey):
+        if isinstance(public_key, ed25519.Ed25519PublicKey):
+            public_key.verify(signature, data)
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
             public_key.verify(signature, data, ec.ECDSA(hashes.SHA256()))
         elif isinstance(public_key, rsa.RSAPublicKey):
             public_key.verify(

@@ -19,7 +19,7 @@ from typing import Optional, Tuple, Union
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from ..core.types import LayerReport, LayerType, VisibleSettings
 from ..utils.perf import measure_time
@@ -152,9 +152,9 @@ def render_visible_watermark(
     image: np.ndarray,
     text: str,
     position: str = "bottom-right",
-    opacity: float = 0.55,
-    font_size_ratio: float = 0.06,
-    color: Tuple[int, int, int] = (32, 32, 32),
+    opacity: float = 0.20,
+    font_size_ratio: float = 0.03,
+    color: Tuple[int, int, int] = (160, 160, 160),
 ) -> np.ndarray:
     """在图像上叠加半透明文字水印
 
@@ -164,27 +164,31 @@ def render_visible_watermark(
         position: 位置 ("bottom-right", "bottom-left", "top-right", "top-left", "center", "tiled")
         opacity: 透明度 (0~1)
         font_size_ratio: 字体大小相对图像宽度
-        color: 文字颜色, 默认深灰在白底上能看见
+        color: 文字颜色, 默认浅灰配合 multiply 混合
     """
     h, w = image.shape[:2]
     font_size = max(int(w * font_size_ratio), 16)
 
     pil_img = Image.fromarray(image)
-    overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
     font = _get_chinese_font(font_size)
 
     if position == "tiled":
-        # 全图平铺 - 抗裁切
-        # 不要旋转: PIL 的 rotate 会对透明 RGBA 做抗锯齿, 把 alpha 摊薄, 视觉上就糊了
-        # 用更密的平铺 + 描边 + 更高不透明度来保证显眼
-        _draw_tiled(draw, text, font, w, h, opacity, color)
+        # 全图平铺 - 抗裁切, 用 multiply 混合保护正文
+        # 灰度 mask: 文字像素 = color 灰度, 背景 = 255 (白) → multiply 不影响白底
+        # 正文是黑色 (≈0), multiply 后仍是 ≈0 → 水印在正文下不可见, 不盖字
+        gray = sum(color) // 3
+        mask = Image.new("L", pil_img.size, 255)
+        mask_draw = ImageDraw.Draw(mask)
+        _draw_tiled(mask_draw, text, font, w, h, gray)
+        result = ImageChops.multiply(pil_img.convert("RGB"), mask.convert("RGB"))
     else:
-        # 角落文字
+        # 角落文字 - 保留 alpha 混合 (角落通常不在正文区)
+        overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         _draw_corner(draw, text, font, w, h, position, opacity, color)
+        result = Image.alpha_composite(pil_img.convert("RGBA"), overlay).convert("RGB")
 
-    result = Image.alpha_composite(pil_img.convert("RGBA"), overlay)
-    return np.array(result.convert("RGB"), dtype=np.uint8)
+    return np.array(result, dtype=np.uint8)
 
 
 def _draw_corner(
@@ -226,34 +230,28 @@ def _draw_tiled(
     font,
     w: int,
     h: int,
-    opacity: float,
-    color: Tuple[int, int, int],
+    gray: int,
 ) -> None:
-    """平铺水印 - 抗裁切的关键"""
+    """平铺水印 - 抗裁切的关键
+
+    在灰度 mask 上绘制: 文字像素 = gray, 背景 = 255.
+    与原图 multiply 后: 白底不变 (255*gray/255=gray), 黑字区不变 (0*gray/255=0).
+    """
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
 
-    # 密铺: 间距更紧, 每行多几个, 视觉上更明显
+    # 平铺间距 - 拉大间距避免密铺盖住正文
     spacing_x = int(tw * 1.4)
     spacing_y = int(th * 2.2)
-
-    shadow_color = _shadow_color(color)
-    # 1 像素描边 (4 方向)
-    outline_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
     for y in range(-spacing_y, h + spacing_y, spacing_y):
         for x in range(-spacing_x, w + spacing_x, spacing_x):
             # 奇数行偏移, 形成交错
             offset = (spacing_x // 2) if (y // spacing_y) % 2 == 1 else 0
             cx, cy = x + offset, y
-            # 描边 (深色) — 保证在白底或浅底都能看见
-            for dx, dy in outline_offsets:
-                draw.text((cx + dx, cy + dy), text, font=font,
-                          fill=(*shadow_color, int(opacity * 200)))
-            # 主体 — 几乎全不透明
-            draw.text((cx, cy), text, font=font,
-                      fill=(*color, int(opacity * 255)))
+            # 主体 (灰度值, 0=黑, 255=白; 与 multiply mask 配合)
+            draw.text((cx, cy), text, font=font, fill=gray)
 
 
 def _shadow_color(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
@@ -280,10 +278,11 @@ def process(
     2. 应用对抗扰动 (抗 AI 修复攻击)
     """
     # 把 settings.text 里的占位符替换成实际 ID + 名字, 让截图就能溯源
-    resolved_text = settings.text.format(
-        teacher_id=teacher_id or "TEACHER",
-        teacher_name=teacher_name or "",
-    ).strip()
+    # 用 replace 不用 format: 防止 teacher_id 中包含 {__class__} 等格式注入
+    resolved_text = settings.text
+    resolved_text = resolved_text.replace("{teacher_id}", teacher_id or "TEACHER")
+    resolved_text = resolved_text.replace("{teacher_name}", teacher_name or "")
+    resolved_text = resolved_text.strip()
 
     with measure_time("L2_visible") as timer:
         try:

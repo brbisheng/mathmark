@@ -31,6 +31,7 @@ dependencies = [
     "Pillow>=10.0",
     "opencv-python>=4.8",
     "scipy>=1.11",
+    "PyWavelets>=1.4",
 
     # 水印
     "invisible-watermark>=0.2",  # DWT-DCT-SVD
@@ -42,6 +43,10 @@ dependencies = [
 
     # 编排
     "PyYAML>=6.0",
+
+    # CLI entrypoint (mathmark) imports these at startup
+    "typer>=0.9",
+    "rich>=13.0",
 ]
 
 # 可选依赖 - 按需安装
@@ -58,8 +63,8 @@ crypto_advanced = [
     "c2pa-python>=0.4",           # C2PA manifest
 ]
 cli = [
-    "typer>=0.9",
-    "rich>=13.0",
+    # Kept for backwards compatibility; CLI deps are required by the base
+    # package because [project.scripts] exposes the mathmark command by default.
 ]
 gui = [
     "PyQt5>=5.15",

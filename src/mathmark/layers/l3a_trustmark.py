@@ -32,7 +32,6 @@ try:
     TRUSTMARK_AVAILABLE = True
 except ImportError:
     TRUSTMARK_AVAILABLE = False
-    warnings.warn("trustmark not installed. L3a will use fallback DWT-DCT.", stacklevel=2)
 
 
 # TrustMark 公开的模型 URL
@@ -94,9 +93,16 @@ def _bits_to_secret(bits: np.ndarray, n_bytes: int = 16) -> bytes:
 # ============================================================
 
 class TrustMarkBackend:
-    """TrustMark 模型包装 (单例,避免重复加载)"""
+    """TrustMark 模型包装 (单例,避免重复加载)
 
-    _instance: Optional["TrustMarkBackend"] = None
+    Audit B17: the previous class-level singleton meant switching model_path
+    between calls was silently ignored (only the first caller's model stayed
+    loaded). Key the cache by resolved model path so different models can
+    coexist; reset only on a real model swap.
+    """
+
+    # path -> instance
+    _instances: dict[str, "TrustMarkBackend"] = {}
 
     def __init__(self, model_path: PathLike):
         if not TRUSTMARK_AVAILABLE:
@@ -111,12 +117,14 @@ class TrustMarkBackend:
 
     @classmethod
     def get_instance(cls, model_path: Optional[PathLike] = None) -> "TrustMarkBackend":
-        if cls._instance is None:
-            if model_path is None:
-                # 默认路径
-                model_path = Path.home() / ".mathmark" / "models" / "trustmark.onnx"
-            cls._instance = cls(model_path)
-        return cls._instance
+        if model_path is None:
+            # 默认路径
+            model_path = Path.home() / ".mathmark" / "models" / "trustmark.onnx"
+        # 用 resolve 后的绝对路径作为 key, 避免相对/绝对/符号链接被当作不同的模型
+        key = str(Path(model_path).expanduser().resolve())
+        if key not in cls._instances:
+            cls._instances[key] = cls(model_path)
+        return cls._instances[key]
 
     def embed(self, image: np.ndarray, payload_bits: np.ndarray) -> np.ndarray:
         """嵌入水印"""
@@ -216,9 +224,12 @@ def _fallback_embed(
 
     # 重新合成 RGB
     if image.ndim == 3:
-        # 简单恢复 (假设近灰度)
-        scale = watermarked_Y / (Y + 1e-8)
-        result = (image.astype(np.float64) * scale[..., None]).clip(0, 255).astype(np.uint8)
+        # Audit B10: 之前用 multiplicative scale 把 Y 差扩散到 R/G/B,
+        # 对彩色图像会把饱和的色块推得偏色/溢出. 改用 additive delta,
+        # 让 L3b/L4 不被 Y-channel 之外的二次扰动影响 (CLAUDE.md 也不准
+        # 在 L3a fallback 里写 per-channel). delta 加到所有通道保留色相.
+        delta = (watermarked_Y - Y)
+        result = (image.astype(np.float64) + delta[..., None]).clip(0, 255).astype(np.uint8)
         return result
     else:
         return watermarked_Y.astype(np.uint8)

@@ -70,6 +70,7 @@ def save_image(
     quality: int = 95,
     preserve_exif: bool = True,
     exif_bytes: Optional[bytes] = None,
+    xmp_bytes: Optional[bytes] = None,
     **kwargs,
 ) -> None:
     """保存图像
@@ -80,6 +81,8 @@ def save_image(
         quality: JPEG/WebP 质量
         preserve_exif: 是否保留 EXIF
         exif_bytes: 显式提供的 EXIF bytes (优先于 img.info["exif"])
+        xmp_bytes: 显式提供的 XMP packet bytes. JPEG: 写入 APP1 (XMP 段),
+            PNG: 写入 iTXt chunk (keyword=XML:com.adobe.xmp). WebP/TIFF/BMP: 跳过.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,6 +122,20 @@ def save_image(
         eb = exif_bytes or pil_img.info.get("exif")
         if eb:
             save_kwargs["exif"] = eb
+
+    # 写 XMP - audit B12: 之前 XMP 被截断后塞进 EXIF ImageDescription,
+    # 不是真正的 XMP. 现在按容器分别写 APP1 (JPEG) / iTXt (PNG).
+    if xmp_bytes:
+        if suffix in (".jpg", ".jpeg"):
+            # JPEG APP1 with XMP namespace signature
+            pil_img.info["xmp"] = b"http://ns.adobe.com/xap/1.0/\x00" + xmp_bytes
+        elif suffix == ".png":
+            from PIL.PngImagePlugin import PngInfo
+            pnginfo = save_kwargs.get("pnginfo")
+            if pnginfo is None:
+                pnginfo = PngInfo()
+            pnginfo.add_text("XML:com.adobe.xmp", xmp_bytes.decode("utf-8"))
+            save_kwargs["pnginfo"] = pnginfo
 
     pil_img.save(str(path), **save_kwargs)
 

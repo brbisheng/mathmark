@@ -10,8 +10,6 @@ from .core.config import (
     save_config,
     save_signature,
 )
-from .core.pipeline import WatermarkPipeline
-from .verify.extractor import extract_all, verify_image
 from .core.types import (
     BenchmarkResult,
     C2PASettings,
@@ -37,6 +35,25 @@ from .core.types import (
     WatermarkConfig,
     WatermarkResult,
 )
+
+
+_LAZY_EXPORTS = {
+    "WatermarkPipeline": (".core.pipeline", "WatermarkPipeline"),
+    "extract_all": (".verify.extractor", "extract_all"),
+    "verify_image": (".verify.extractor", "verify_image"),
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_EXPORTS:
+        import importlib
+
+        module_name, attr_name = _LAZY_EXPORTS[name]
+        module = importlib.import_module(module_name, __name__)
+        value = getattr(module, attr_name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "BenchmarkResult",

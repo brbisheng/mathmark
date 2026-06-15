@@ -23,7 +23,8 @@ from mathmark.semantic.injector import (
     generate_suggestions,
     inject_to_text,
 )
-from mathmark.semantic.recognizer import recognize_from_text
+from mathmark.semantic.ocr import OCRResult
+from mathmark.semantic.recognizer import recognize_from_ocr, recognize_from_text
 
 
 class TestSignature:
@@ -144,6 +145,25 @@ class TestProblemHash:
         # 标准化规则后应该相同
         # 我们的规范化将 x^2 -> x², 空格去除
         assert h1 == h2 or len(h1) > 0  # 至少 hash 非空
+
+
+class TestMockOCR:
+    def test_mock_ocr_is_not_attribution_evidence(self):
+        sig = MathSignature(teacher_id="T1")
+        ocr = OCRResult(
+            tokens=[],
+            full_text="设 x 为未知数, 化简得 x^2 - 5x + 6 = 0, 故 x = 2 或 x = 3",
+            lines=["设 x 为未知数, 化简得 x^2 - 5x + 6 = 0, 故 x = 2 或 x = 3"],
+            engine="mock",
+        )
+
+        result = recognize_from_ocr(ocr, sig)
+
+        assert result.ocr_engine == "mock"
+        assert result.overall_similarity == 0.0
+        assert result.verdict == "NO_MATCH"
+        assert result.matched_signatures == []
+        assert any("mock fallback" in item for item in result.evidence)
 
 
 class TestInjector:
