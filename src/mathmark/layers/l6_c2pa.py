@@ -38,7 +38,35 @@ try:
     C2PA_AVAILABLE = True
 except ImportError:
     C2PA_AVAILABLE = False
-    warnings.warn("c2pa-python not installed. L6 will use simplified manifest.", stacklevel=2)
+
+
+def _image_fingerprint(image: np.ndarray) -> str:
+    """Stable per-image hash that survives JPEG roundtrip / resize.
+
+    Audit B3: previously we hashed `image.tobytes()` which produced a
+    byte-exact hash. Any decode (JPEG, resize, color conversion) changed
+    the bytes and broke verification. Use pHash from L1 instead so the
+    embed and verify sides agree on a perceptual fingerprint.
+    """
+    try:
+        from PIL import Image as _PILImage
+        from .l1_fingerprint import compute_fingerprint
+        pil = _PILImage.fromarray(image.astype(np.uint8)).convert("RGB")
+        fp = compute_fingerprint(pil)
+        if fp.phash:
+            return fp.phash
+    except Exception:
+        pass
+    # Fallback: deterministic PNG re-encode (still survives resize via
+    # a 32-bit dHash if the above path fails)
+    try:
+        from PIL import Image as _PILImage
+        import io as _io
+        buf = _io.BytesIO()
+        _PILImage.fromarray(image.astype(np.uint8)).convert("RGB").save(buf, format="PNG")
+        return hashlib.sha256(buf.getvalue()).hexdigest()
+    except Exception:
+        return hashlib.sha256(image.astype(np.uint8).tobytes()).hexdigest()
 
 
 # ============================================================
@@ -89,8 +117,17 @@ def _build_assertions(
     phash: Optional[str] = None,
     semantic_sim: Optional[float] = None,
     custom: Optional[dict] = None,
+    *,
+    timestamp: Optional[str] = None,
 ) -> list[dict]:
-    """构造 C2PA assertions"""
+    """构造 C2PA assertions
+
+    `timestamp` is explicit so verify can re-build the same bytes that
+    were signed at embed time. Without it, `dateCreated = datetime.now()`
+    drifts between sign and verify and the signature never matches.
+    """
+    ts = timestamp or datetime.now().isoformat()
+    year = datetime.fromisoformat(ts).year
     assertions = [
         {
             "label": "stds.schema-org.CreativeWork",
@@ -106,8 +143,8 @@ def _build_assertions(
                     "@type": "Person",
                     "name": teacher_name or teacher_id,
                 },
-                "copyrightYear": datetime.now().year,
-                "dateCreated": datetime.now().isoformat(),
+                "copyrightYear": year,
+                "dateCreated": ts,
                 "name": "MathMark-signed educational content",
                 "description": "Mathematics teaching material with content provenance",
             },
@@ -139,9 +176,16 @@ def _create_simplified_manifest(
     custom_assertions: Optional[dict] = None,
 ) -> Tuple[SimplifiedManifest, bool]:
     """创建简化 manifest"""
-    image_bytes = image.tobytes()
-    image_hash = hashlib.sha256(image_bytes).hexdigest()
-    assertions = _build_assertions(teacher_id, teacher_name, phash, semantic_sim, custom_assertions)
+    # audit B3: use perceptual fingerprint, not raw bytes, so verify
+    # survives JPEG roundtrip / resize
+    image_hash = _image_fingerprint(image)
+    # Freeze one timestamp used by both the manifest field and the
+    # assertions so verify can re-build the same bytes that were signed.
+    now_iso = datetime.now().isoformat()
+    assertions = _build_assertions(
+        teacher_id, teacher_name, phash, semantic_sim, custom_assertions,
+        timestamp=now_iso,
+    )
 
     if keypair is None:
         # 无签名(降级)
@@ -150,7 +194,7 @@ def _create_simplified_manifest(
             teacher_name=teacher_name,
             algorithm="none",
             image_hash=image_hash,
-            timestamp=datetime.now().isoformat(),
+            timestamp=now_iso,
             public_key_fingerprint="",
             signature=b"",
             assertions=assertions,
@@ -162,7 +206,7 @@ def _create_simplified_manifest(
     data_to_sign = json.dumps({
         "teacher_id": teacher_id,
         "image_hash": image_hash,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_iso,
         "assertions": assertions,
     }, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
@@ -173,7 +217,7 @@ def _create_simplified_manifest(
         teacher_name=teacher_name,
         algorithm=keypair.algorithm,
         image_hash=image_hash,
-        timestamp=datetime.now().isoformat(),
+        timestamp=now_iso,
         public_key_fingerprint=pub_fingerprint,
         signature=signature,
         assertions=assertions,
@@ -186,13 +230,21 @@ def _verify_simplified_manifest(
     public_key=None,
 ) -> Tuple[bool, str]:
     """验证简化 manifest"""
-    # 1. 验证 image hash
-    image_hash = hashlib.sha256(image.tobytes()).hexdigest()
+    # 1. 验证 image hash (perceptual, survives JPEG roundtrip / resize)
+    image_hash = _image_fingerprint(image)
     if image_hash != manifest.image_hash:
         return False, f"Image hash mismatch: expected {manifest.image_hash[:16]}..., got {image_hash[:16]}..."
 
     # 2. 验证签名(如果有)
-    if manifest.signature and public_key is not None:
+    # audit B1: if the manifest carries a signature we MUST verify it,
+    # otherwise an attacker can write a fake .manifest.json and the
+    # verifier will say "OK" without ever checking anything.
+    if manifest.signature:
+        if public_key is None:
+            return False, (
+                "Manifest is signed but no public key provided; "
+                "refusing to verify (audit B1)"
+            )
         data_to_verify = json.dumps({
             "teacher_id": manifest.teacher_id,
             "image_hash": manifest.image_hash,

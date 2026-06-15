@@ -21,6 +21,8 @@ from .ocr import OCRResult
 
 
 # 规范化规则 - 去除 OCR 误差
+# audit B18: 之前 [Oo] → 0 / [Il] → 1 是全局替换, 把 "OR" 变 "0R",
+# "Italic" 变 "1talic". 改为只在数字/运算符 token 内部替换.
 _NORMALIZE_RULES = [
     # 全角 -> 半角
     (r"[！-～]", lambda m: chr(ord(m.group()) - 0xFEE0)),
@@ -32,10 +34,21 @@ _NORMALIZE_RULES = [
     (r"\^\s*\{?3\}?", "³"),
     # 空格
     (r"\s+", ""),
-    # 常见 OCR 错误
-    (r"[Oo]", "0"),  # OCR O -> 0 (数字)
-    (r"[Il]", "1"),  # OCR I/l -> 1 (在数字上下文中)
 ]
+
+
+# 只在数字上下文中替换 O → 0 / I,l → 1 (避免破坏英文单词)
+_DIGIT_CONTEXT = re.compile(
+    r"(\d[Oo\d]*[Oo][Oo\d]*)|"  # 数字中间或末尾的 O
+    r"(\d[Il\d]*[Il][Il\d]*)"   # 数字中间或末尾的 I/l
+)
+
+
+def _digit_sub(m: re.Match) -> str:
+    s = m.group(0)
+    s = s.replace("O", "0").replace("o", "0")
+    s = s.replace("I", "1").replace("l", "1")
+    return s
 
 
 def normalize_problem(text: str) -> str:
@@ -43,6 +56,8 @@ def normalize_problem(text: str) -> str:
     s = text
     for pattern, replacement in _NORMALIZE_RULES:
         s = re.sub(pattern, replacement, s)
+    # audit B18: only correct O→0 / I,l→1 in numeric contexts
+    s = _DIGIT_CONTEXT.sub(_digit_sub, s)
     return s
 
 
@@ -120,23 +135,21 @@ def match_examples(
             })
             continue
 
-        # 2. 变体匹配
+        # 2. 收集所有候选 (变体 + 因式分解) 后选最长的, 不要 first-wins (audit B19)
+        candidates: list[tuple[str, str]] = []
         for variant in prob.variants:
             if _problem_in_text(variant, full_text):
-                matched.append({
-                    "problem_id": prob.id,
-                    "match_type": "variant",
-                    "matched_text": variant,
-                })
-                break
-            # 尝试变体的因式分解形式
-            if prob.expected_factoring and _problem_in_text(prob.expected_factoring, full_text):
-                matched.append({
-                    "problem_id": prob.id,
-                    "match_type": "factoring",
-                    "matched_text": prob.expected_factoring,
-                })
-                break
+                candidates.append(("variant", variant))
+        if prob.expected_factoring and _problem_in_text(prob.expected_factoring, full_text):
+            candidates.append(("factoring", prob.expected_factoring))
+        if candidates:
+            # 最长的匹配更具体, 优先
+            best_type, best_text = max(candidates, key=lambda c: len(c[1]))
+            matched.append({
+                "problem_id": prob.id,
+                "match_type": best_type,
+                "matched_text": best_text,
+            })
 
     # 计算置信度
     n_total = len(all_problems) or 1

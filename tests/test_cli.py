@@ -36,6 +36,22 @@ def setup_config(tmp_path) -> str:
     return str(config_path)
 
 
+def test_base_install_includes_cli_runtime_dependencies():
+    import sys
+
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:
+        import tomli as tomllib
+
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    deps = chr(10).join(data["project"]["dependencies"])
+
+    assert "typer" in deps
+    assert "rich" in deps
+    assert "PyWavelets" in deps
+
+
 class TestCLI:
     def test_version_constant(self):
         """版本号应可读"""

@@ -45,7 +45,14 @@ def save_signature(signature: MathSignature, path: PathLike) -> None:
 
 
 def _parse_layers(layers: Any) -> set[LayerType]:
-    """解析 layers 配置(支持 'all', 列表, 或逗号分隔字符串)"""
+    """解析 layers 配置 (支持 'all', 列表, 或逗号分隔字符串).
+
+    Audit B6: bare "L3" is ambiguous (matches L3a/L3b/L3c all three) and the
+    old `startswith` branch returned the FIRST matching layer silently,
+    which is wrong for an unknown specifier. Now we match either the full
+    value (e.g. "L3a_trustmark") OR the prefix-with-underscore (e.g. "L3a"),
+    and reject bare "L1"/"L3" with a clear error.
+    """
     if layers == "all":
         return set(LayerType)
     if isinstance(layers, str):
@@ -54,15 +61,32 @@ def _parse_layers(layers: Any) -> set[LayerType]:
         result = set()
         layer_map = {lt.value: lt for lt in LayerType}
         for item in layers:
-            if isinstance(item, str):
-                if item in layer_map:
-                    result.add(layer_map[item])
-                elif item.startswith("L") and item[1:].isdigit():
-                    # 支持 "L1" "L2" 等简写
-                    for lt in LayerType:
-                        if lt.value.startswith(item):
-                            result.add(lt)
-                            break
+            if not isinstance(item, str):
+                continue
+            if item in layer_map:
+                result.add(layer_map[item])
+                continue
+            # Match by "L<n><letter>_" prefix (e.g. "L3a" -> "L3a_trustmark")
+            prefix = item.split("_")[0]
+            matches = [lt for lt in LayerType if lt.value == item or lt.value.split("_")[0] == prefix]
+            if not matches:
+                raise ValueError(
+                    f"Unknown layer specifier: '{item}'. "
+                    f"Use one of: {sorted(layer_map.keys())} or 'all'."
+                )
+            if len(matches) > 1:
+                # Ambiguous like "L3" — accept the specifier only if it's
+                # already underscore-separated (L3a, L3b, L3c), otherwise
+                # reject with a clear error.
+                if item != prefix:
+                    result.update(matches)
+                else:
+                    raise ValueError(
+                        f"Ambiguous layer specifier: '{item}' matches {sorted(m.value for m in matches)}. "
+                        f"Use one of: {sorted(m.value for m in matches)}."
+                    )
+            else:
+                result.add(matches[0])
         return result
     return set(LayerType)
 
@@ -123,7 +147,7 @@ def _build_config(data: dict[str, Any]) -> WatermarkConfig:
         visible=VisibleSettings(
             text=visible_d.get("text", "© {teacher_id} {teacher_name}"),
             position=visible_d.get("position", "tiled"),
-            opacity=visible_d.get("opacity", 0.18),
+            opacity=visible_d.get("opacity", 0.20),
             perturbation_strength=visible_d.get("perturbation_strength", 0.02),
             enable_perturbation=visible_d.get("enable_perturbation", True),
         ),

@@ -158,6 +158,26 @@ class TestL6C2PA:
         assert report.success or not report.success  # 不论成功失败
         assert report.layer == LayerType.C2PA
 
+    def test_signed_manifest_requires_public_key(self, test_image, tmp_path):
+        settings = l6_c2pa.C2PASettings(enable=True)
+        from mathmark.crypto.keys import generate_keypair
+
+        keypair = generate_keypair("ed25519")
+        manifest_path = tmp_path / "signed.manifest.json"
+        image, _, _ = l6_c2pa.process(
+            test_image,
+            settings,
+            teacher_id="T001",
+            teacher_name="Test",
+            keypair=keypair,
+            output_manifest_path=manifest_path,
+        )
+
+        valid, msg = l6_c2pa.verify_manifest(manifest_path, image)
+
+        assert not valid
+        assert "no public key" in msg
+
     def test_simplified_manifest_verification(self, test_image):
         settings = l6_c2pa.C2PASettings(enable=True)
         # 使用临时路径

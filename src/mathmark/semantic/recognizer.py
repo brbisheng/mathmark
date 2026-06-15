@@ -11,7 +11,7 @@ from typing import List, Optional, Union
 
 import numpy as np
 
-from ..core.types import MathSignature
+from ..core.types import MathSignature, Verdict
 from .example_db import ExampleMatch, match_examples
 from .ocr import OCRResult, get_engine
 from .step_matcher import StepMatch, match_steps
@@ -103,8 +103,16 @@ def recognize_from_ocr(
         + weights["visual"] * 0.0  # visual 暂不评分
     )
 
+    using_mock_ocr = ocr_result.engine == "mock"
+    if using_mock_ocr:
+        # Mock OCR is a development fallback. It proves the pipeline is wired,
+        # but it is not image-derived evidence and must not raise attribution.
+        overall = 0.0
+
     # 证据收集
     evidence: List[str] = []
+    if using_mock_ocr:
+        evidence.append("OCR mock fallback: no real image text was recognized")
     if symbol_match.matched_markers:
         evidence.append(
             f"找到结论标记: {', '.join(symbol_match.matched_markers)}"
@@ -127,15 +135,15 @@ def recognize_from_ocr(
             f"找到招牌例题: {', '.join(problem_ids)}"
         )
 
-    # 判定
+    # 判定 (Audit B23: 用 Verdict 枚举而不是裸字符串, 词汇表跟 verify/ 保持一致)
     if overall >= 0.75:
-        verdict = "STRONG_MATCH"
+        verdict = Verdict.STRONG_MATCH.value
     elif overall >= 0.55:
-        verdict = "PROBABLE_MATCH"
+        verdict = Verdict.PROBABLE_MATCH.value
     elif overall >= 0.35:
-        verdict = "WEAK_MATCH"
+        verdict = Verdict.WEAK_INDICATION.value
     else:
-        verdict = "NO_MATCH"
+        verdict = Verdict.NO_MATCH.value
 
     return RecognitionResult(
         symbol_match=symbol_match,

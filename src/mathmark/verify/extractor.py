@@ -21,6 +21,7 @@ from ..core.types import (
     VerificationResult,
     WatermarkConfig,
 )
+from ..core.secret import bits_from_secret, derive_secret
 from ..crypto.hashing import sha256_bytes, sha256_bytes_raw
 from ..crypto.keys import verify_signature
 from ..layers import (
@@ -60,8 +61,7 @@ def extract_all(
         return {}
 
     # 派生 secret (与 embed 时相同)
-    secret_str = f"{config.teacher_id}:{config.teacher_name}"
-    secret = sha256_bytes_raw(secret_str.encode("utf-8"))
+    secret = derive_secret(config)
 
     results: dict[LayerType, Optional[bytes]] = {}
 
@@ -76,11 +76,12 @@ def extract_all(
     # L3b
     if config.is_enabled(LayerType.INVISIBLE_DWT):
         try:
-            wm_bits = np.frombuffer(
-                (config.teacher_id.encode("utf-8") * 4)[:32], dtype=np.uint8
-            )[:32] % 2
-            if len(wm_bits) < 32:
-                wm_bits = np.concatenate([wm_bits, np.zeros(32 - len(wm_bits), dtype=np.uint8)])
+            # 32 bits from the full per-teacher secret (matches pipeline L3b)
+            wm_bits_arr = np.frombuffer(bits_from_secret(secret, 32), dtype=np.uint8)[:32] % 2
+            if len(wm_bits_arr) < 32:
+                wm_bits_arr = np.concatenate(
+                    [wm_bits_arr, np.zeros(32 - len(wm_bits_arr), dtype=np.uint8)]
+                )
             bits = l3b_dwt_dct_svd.extract(image, config.dwt, wm_length=32)
             results[LayerType.INVISIBLE_DWT] = bits.tobytes() if len(bits) > 0 else None
         except Exception:
@@ -201,17 +202,18 @@ def verify_image(
 
     # ================ L3: 不可见水印 (通过提取的 bits) ================
     bits_dict = extract_all(image_path, config)
-    # 期望的 teacher_id bits (给 L3b 用 - 它直接用 teacher_id 作 payload)
+    # 期望的 L3b bits: 必须用 embed 时同一份 secret 派生 (pipeline 同款公式)
+    secret = derive_secret(config)
     expected_bits_l3b = np.frombuffer(
-        (config.teacher_id.encode("utf-8") * 4)[:32], dtype=np.uint8
+        bits_from_secret(secret, 32), dtype=np.uint8
     )[:32] % 2
     if len(expected_bits_l3b) < 32:
-        expected_bits_l3b = np.concatenate([expected_bits_l3b, np.zeros(32 - len(expected_bits_l3b), dtype=np.uint8)])
+        expected_bits_l3b = np.concatenate(
+            [expected_bits_l3b, np.zeros(32 - len(expected_bits_l3b), dtype=np.uint8)]
+        )
 
-    # L3a 的预期 bits: 必须用 embed 时同一份 secret 派生 (pipeline._derive_secret 同款公式)
+    # L3a 的预期 bits: 必须用 embed 时同一份 secret 派生
     from ..layers.l3a_trustmark import _secret_to_bits as l3a_secret_to_bits
-    secret_str = f"{config.teacher_id}:{config.teacher_name}"
-    secret = sha256_bytes_raw(secret_str.encode("utf-8"))
     expected_bits_l3a = l3a_secret_to_bits(secret, 100)  # 与 embed 的 n_bits 对齐
 
     for layer in [LayerType.INVISIBLE_TRUSTMARK, LayerType.INVISIBLE_DWT, LayerType.INVISIBLE_COX]:
@@ -227,15 +229,22 @@ def verify_image(
         if layer == LayerType.INVISIBLE_COX:
             # L3c 只嵌入 1 bit, 重复到 n_bits. "匹配" 判定: 64 个 bit 是否一致
             # (presence detector: 一致说明是被 embed 过的图)
+            # (audit B11: 全 0 一致不能给高置信度 — 可能是未水印图像天然偏 0)
             if len(extracted_arr) == 0:
                 confidence = 0.0
                 ber = 1.0
             else:
                 unique_bits = np.unique(extracted_arr)
                 if len(unique_bits) == 1:
-                    # 所有 bit 一致 → Cox 嵌入存在
-                    confidence = 0.9
-                    ber = 0.0
+                    bit_value = int(unique_bits[0])
+                    if bit_value == 1:
+                        # 全部 1 → 强存在信号 (未水印图像天然不太可能全 1)
+                        confidence = 0.9
+                        ber = 0.0
+                    else:
+                        # 全部 0 → 可能是未水印图像天然偏 0, 弱信号
+                        confidence = 0.4
+                        ber = 0.0
                 else:
                     # 提取出多于一种 bit 值 → 未嵌入或被破坏
                     majority = int(np.bincount(extracted_arr).argmax())

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -123,6 +124,13 @@ def generate_pdf_report(result: VerificationResult, output_path: PathLike) -> No
         )
     except ImportError:
         # 降级到 markdown
+        # Audit B21: 静默把 .pdf 改成 .md 容易让用户以为有 PDF; 显式 warn
+        warnings.warn(
+            "reportlab is not installed; falling back to Markdown report "
+            f"(output: {Path(output_path).with_suffix('.md')}). "
+            "Install with `pip install reportlab` for real PDF output.",
+            stacklevel=2,
+        )
         md = generate_markdown_report(result)
         Path(output_path).with_suffix(".md").write_text(md, encoding="utf-8")
         return
@@ -250,6 +258,12 @@ def generate_legal_report(result: VerificationResult, output_path: PathLike) -> 
             generate_pdf_report(result, output_path)
         except Exception as e:
             # 降级
+            # Audit B21: 同上, 把 .pdf 静默换成 .md 容易让用户误以为成功了
+            warnings.warn(
+                f"PDF generation failed ({e!r}); falling back to Markdown "
+                f"report (output: {output_path.with_suffix('.md')}).",
+                stacklevel=2,
+            )
             md = generate_markdown_report(result)
             output_path.with_suffix(".md").write_text(md, encoding="utf-8")
     elif suffix in (".md", ".markdown"):

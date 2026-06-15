@@ -16,7 +16,7 @@ watermark:
   visible:
     text: "© {teacher_id} {teacher_name}"
     position: tiled
-    opacity: 0.55
+    opacity: 0.20
     perturbation_strength: 0.02
     enable_perturbation: true
   trustmark:

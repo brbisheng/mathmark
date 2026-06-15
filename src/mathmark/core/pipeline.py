@@ -28,6 +28,7 @@ from ..layers import (
     l6_c2pa,
 )
 from ..utils.perf import get_memory_mb, measure_time
+from .secret import bits_from_secret, derive_secret
 from .types import (
     BenchmarkResult,
     LayerReport,
@@ -39,12 +40,10 @@ from .types import (
 PathLike = Union[str, Path]
 
 
-def _derive_secret(config: WatermarkConfig, teacher_text: Optional[str] = None) -> bytes:
-    """派生本图像的 secret 字节 (32 字节)"""
-    base = f"{config.teacher_id}:{config.teacher_name}"
-    if teacher_text:
-        base += f":{teacher_text[:64]}"
-    return sha256_bytes_raw(base.encode("utf-8"))
+# Back-compat: pipeline used to expose `_derive_secret` as a private helper.
+# Re-export under the old name so existing imports keep working; new code
+# should import from `core.secret` directly.
+_derive_secret = derive_secret
 
 
 class WatermarkPipeline:
@@ -148,17 +147,17 @@ class WatermarkPipeline:
         # ================ L3b: DWT-DCT-SVD ================
         if self.config.is_enabled(LayerType.INVISIBLE_DWT):
             try:
-                # 用教师 ID 的前 64 字节作为水印
-                wm_bits = np.frombuffer(
-                    (self.config.teacher_id.encode("utf-8") * 4)[:32],
-                    dtype=np.uint8,
-                )[:32] % 2
-                if len(wm_bits) < 32:
-                    wm_bits = np.concatenate([wm_bits, np.zeros(32 - len(wm_bits), dtype=np.uint8)])
+                # 32 bits derived from the full per-(teacher, image) secret
+                # (audit B9: short teacher_id produced mostly-zero bits)
+                wm_bits_arr = np.frombuffer(bits_from_secret(secret, 32), dtype=np.uint8)[:32] % 2
+                if len(wm_bits_arr) < 32:
+                    wm_bits_arr = np.concatenate(
+                        [wm_bits_arr, np.zeros(32 - len(wm_bits_arr), dtype=np.uint8)]
+                    )
                 result.image, report, bits = l3b_dwt_dct_svd.process(
                     result.image,
                     self.config.dwt,
-                    wm_bits,
+                    wm_bits_arr,
                 )
                 result.layer_reports[LayerType.INVISIBLE_DWT] = report
                 result.extracted_bits[LayerType.INVISIBLE_DWT] = bits.tobytes() if len(bits) > 0 else b""
@@ -223,6 +222,8 @@ class WatermarkPipeline:
                 result.layer_reports[LayerType.METADATA] = report
                 # 把 L5 构造的 EXIF bytes 留着, 后面 save_image 时用, 避免 numpy roundtrip 丢失
                 result.exif_bytes = meta_data.get("exif_bytes")
+                # 同理, XMP packet 也留给 save_image 写真正的 APP1/iTXt
+                result.xmp_bytes = meta_data.get("xmp_bytes")
                 _progress(LayerType.METADATA)
             except Exception as e:
                 result.layer_reports[LayerType.METADATA] = LayerReport(
@@ -266,6 +267,7 @@ class WatermarkPipeline:
                 output_path,
                 quality=95,
                 exif_bytes=getattr(result, "exif_bytes", None),
+                xmp_bytes=getattr(result, "xmp_bytes", None),
             )
 
         return result
@@ -275,13 +277,32 @@ class WatermarkPipeline:
         images: List[np.ndarray],
         output_paths: Optional[List[PathLike]] = None,
         progress_callback: Optional[Callable[[int, int, WatermarkResult], None]] = None,
+        manifest_paths: Optional[List[Optional[PathLike]]] = None,
     ) -> List[WatermarkResult]:
-        """批处理多张图像"""
+        """批处理多张图像
+
+        Args:
+            images: 输入图像列表
+            output_paths: 输出图像路径 (与 images 同长度, None 表示不写盘)
+            progress_callback: 进度回调 (i+1, n, result)
+            manifest_paths: audit B15 — 每张图的 C2PA manifest 输出路径,
+                缺省时按 output_path 推导为 <output>.manifest.json
+        """
         results = []
         n = len(images)
         for i, img in enumerate(images):
             out_path = output_paths[i] if output_paths else None
-            result = self.process(img, output_path=out_path)
+            if manifest_paths is not None:
+                mpath = manifest_paths[i]
+            elif out_path is not None:
+                mpath = Path(out_path).with_suffix(Path(out_path).suffix + ".manifest.json")
+            else:
+                mpath = None
+            result = self.process(
+                img,
+                output_path=out_path,
+                manifest_path=mpath,
+            )
             results.append(result)
             if progress_callback:
                 progress_callback(i + 1, n, result)
@@ -293,19 +314,29 @@ class WatermarkPipeline:
         n_iterations: int = 3,
     ) -> BenchmarkResult:
         """性能基准测试"""
+        # audit B22: 之前 n_iterations=0 会让 mean_duration_ms 用未赋值的 durations 数组算, 抛 NameError
+        if n_iterations < 1:
+            raise ValueError(f"n_iterations must be >= 1, got {n_iterations}")
+
+        import tracemalloc
         durations = []
         layer_breakdown: dict[LayerType, float] = {}
 
-        for i in range(n_iterations):
-            mem_before = get_memory_mb()
-            result = self.process(image.copy())
-            mem_after = get_memory_mb()
-            durations.append(result.total_duration_ms)
-            for layer, report in result.layer_reports.items():
-                layer_breakdown[layer] = layer_breakdown.get(layer, 0) + report.duration_ms
-            if i == 0:
-                # 用第一次的分解
-                layer_breakdown = {k: v for k, v in layer_breakdown.items()}
+        # audit B16: 之前 memory_peak_mb 是 mem_after - mem_before (delta),
+        # 内存被释放时会变成负数. 改用 tracemalloc 取真正的峰值.
+        tracemalloc.start()
+        try:
+            for i in range(n_iterations):
+                result = self.process(image.copy())
+                durations.append(result.total_duration_ms)
+                for layer, report in result.layer_reports.items():
+                    layer_breakdown[layer] = layer_breakdown.get(layer, 0) + report.duration_ms
+                if i == 0:
+                    layer_breakdown = {k: v for k, v in layer_breakdown.items()}
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            peak_mb = peak_bytes / (1024 * 1024)
+        finally:
+            tracemalloc.stop()
 
         # 平均分解
         layer_breakdown = {k: v / n_iterations for k, v in layer_breakdown.items()}
@@ -318,6 +349,6 @@ class WatermarkPipeline:
             std_duration_ms=float(durations_arr.std()),
             min_duration_ms=float(durations_arr.min()),
             max_duration_ms=float(durations_arr.max()),
-            memory_peak_mb=mem_after - mem_before,
+            memory_peak_mb=peak_mb,
             layer_breakdown=layer_breakdown,
         )

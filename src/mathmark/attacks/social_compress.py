@@ -90,16 +90,24 @@ def jpeg_recompress(image: np.ndarray, quality: int = 70, n_iterations: int = 1)
 
 def resize_attack(image: np.ndarray, scale: float = 0.5) -> np.ndarray:
     """尺寸缩放攻击"""
+    if not (0 < scale <= 1):
+        raise ValueError(f"resize_attack: scale must be in (0, 1], got {scale}")
     pil = Image.fromarray(image.astype(np.uint8))
-    new_size = (int(pil.width * scale), int(pil.height * scale))
+    new_size = (max(1, int(pil.width * scale)), max(1, int(pil.height * scale)))
     pil = pil.resize(new_size, Image.LANCZOS)
     return np.array(pil, dtype=np.uint8)
 
 
 def crop_attack(image: np.ndarray, crop_ratio: float = 0.1) -> np.ndarray:
     """边缘裁切攻击"""
+    if not (0 <= crop_ratio < 0.5):
+        raise ValueError(f"crop_attack: crop_ratio must be in [0, 0.5), got {crop_ratio}")
     h, w = image.shape[:2]
     cy, cx = int(h * crop_ratio), int(w * crop_ratio)
+    if h - 2 * cy <= 0 or w - 2 * cx <= 0:
+        raise ValueError(
+            f"crop_attack: image too small ({h}x{w}) for crop_ratio {crop_ratio}"
+        )
     return image[cy:h-cy, cx:w-cx]
 
 

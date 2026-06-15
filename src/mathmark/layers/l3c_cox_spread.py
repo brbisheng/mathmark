@@ -160,8 +160,10 @@ def process(
         try:
             # 简化: Cox 携带 1 bit (经典 Cox 方案就是 1 bit)
             # 多 bit 实现需要区域划分,这里直接做 1 bit 嵌入
+            # 使用固定长度 64*64 与 extract() 对齐, 避免 embed/extract PN 长度不匹配
+            # (audit B5: extract 之前硬编码 64*64, embed 用 image.shape[0]*image.shape[1])
             base_seed = settings.seed + int.from_bytes(secret[:4], "big")
-            pn = _generate_pn_sequence(image.shape[0] * image.shape[1], base_seed)
+            pn = _generate_pn_sequence(64 * 64, base_seed)
 
             result, Y_orig, Y_wm = _embed_in_luminance(image, pn, settings.strength)
             extracted = _extract_from_luminance(result, pn, Y_orig)
