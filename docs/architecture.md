@@ -92,8 +92,9 @@ mathmark/
     │
     ▼
 [Layer 2] 可见水印 + 对抗扰动
-    │  - render_visible_watermark()
-    │  - apply_adversarial_perturbation()
+    │  - render_visible_watermark()      ← diagonal_scatter (路透/法新风格)
+    │  │    灰度 mask × 原图 (multiply 混合) 保护黑色数学内容不被遮挡
+    │  - apply_adversarial_perturbation() ← 高频纹理扰动 (抗 LaMa/MAT 修复)
     ▼
 [Layer 3a] TrustMark 嵌入 (DCT 降级)
 [Layer 3b] DWT-DCT-SVD 嵌入
@@ -155,11 +156,16 @@ Verdict: STRONG_MATCH / PROBABLE_MATCH / WEAK / NO_MATCH
 
 三者同时嵌入, 提取时投票, 互相补充。
 
-### 2. 对抗扰动代替 Logo
+### 2. 对角散布水印 + 全图对抗扰动
 
-传统可见水印(角落 logo)易被 LaMa/MAT 修复攻击移除。
+传统可见水印(角落 logo)5 秒裁掉 / DRAFT 大字挡公式 / 密铺像在图上写字 — 三种主流方案都不能兼顾"可见宣示"和"不破坏教学画面"。
 
-MathMark 的 L2 用**全图均匀高频扰动**:
+MathMark 的 L2 用**路透/法新式对角散布**:
+- 6 个 ~40px -30° 灰字散布在 3×2 网格 (砖墙式错开), 不可单边裁切抹除
+- multiply 混合: 灰水印 × 白底 = 灰 (可见), 灰水印 × 黑字 = 黑 (数学内容不变)
+- 用户可见的"宣示所有权" + 不挡公式
+
+配合**全图均匀高频扰动**:
 - 攻击者必须全局修复才能完全去除
 - 即使部分去除,残留扰动也破坏修复的一致性
 - 抗 GradCAM 局部模糊攻击

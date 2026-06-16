@@ -112,9 +112,16 @@ watermark:
   enabled_layers: all
   visible:
     text: "© 王老师数学课堂 2026"
-    position: tiled  # tiled | bottom-right | center
-    opacity: 0.3
-    perturbation_strength: 0.02
+    # 路透/法新风格: 6 个对角 -30° 灰字散布, 不可单边裁切抹除
+    # 配合 multiply 混合: 灰水印 × 白底 = 灰 (可见), 灰水印 × 黑字 = 黑 (公式不被遮挡)
+    position: diagonal_scatter  # diagonal_scatter | tiled | bottom-right | center
+    opacity: 0.30               # multiply 模式下 = 视觉柔和度 (0.30 = 灰 ~48)
+    font_size_ratio: 0.04       # 1024px 宽 → ~40px 字
+    color: [160, 160, 160]      # 中浅灰
+    scatter_count_x: 3          # 水平 3 个
+    scatter_count_y: 2          # 垂直 2 个 (砖墙式错开 → 实际 6-7 个)
+    scatter_angle: -30.0        # 倾斜角
+    perturbation_strength: 0.02  # 对抗扰动强度 (抗 LaMa/MAT AI 修复)
   trustmark:
     model_path: models/trustmark.onnx
   dwt_dct_svd:
